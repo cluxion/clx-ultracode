@@ -68,9 +68,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run_consensus(namespace: argparse.Namespace) -> int:
-    adapter = _mock_adapter(namespace.adapter, agents=namespace.agents, rounds=namespace.rounds)
-    engine = ConsensusEngine(adapter, agents_count=namespace.agents, max_rounds=namespace.rounds)
     try:
+        adapter = _mock_adapter(namespace.adapter, agents=namespace.agents, rounds=namespace.rounds)
+        engine = ConsensusEngine(adapter, agents_count=namespace.agents, max_rounds=namespace.rounds)
         result = engine.decide(namespace.question, context=namespace.context)
     except (ConsensusProtocolError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False))

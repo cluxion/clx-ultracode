@@ -191,8 +191,12 @@ class ConsensusEngine:
             normalized_counts[normalized] += 1
             normalized_to_display.setdefault(normalized, position.stance)
 
-        majority_normalized, majority_count = normalized_counts.most_common(1)[0]
-        majority = normalized_to_display[majority_normalized] if majority_count > 1 else None
+        most = normalized_counts.most_common(2)
+        if len(most) >= 2 and most[0][1] > most[1][1]:
+            majority_normalized = most[0][0]
+            majority = normalized_to_display[majority_normalized]
+        else:
+            majority = None
         points = [
             f"{display}: {', '.join(p.agent_id for p in positions if normalize_stance(p.stance) == normalized)}"
             for normalized, display in normalized_to_display.items()

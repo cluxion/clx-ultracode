@@ -2,6 +2,6 @@
 
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusResult
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 __all__ = ["ConsensusEngine", "ConsensusResult"]
