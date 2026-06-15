@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import importlib.metadata
-import os
-import re
 import shutil
-from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 from .framework import DoctorContext
 
@@ -60,7 +57,7 @@ def entry_point_registered(ctx: DoctorContext) -> tuple[str, str]:
         for ep in eps:
             if "cluxion-agentplugin-effort-ultracode" in (ep.name or "").lower() or "cluxion_effort_ultracode" in (ep.value or ""):
                 mod = ep.load()
-                if hasattr(mod, "register") and callable(getattr(mod, "register")):
+                if hasattr(mod, "register") and callable(mod.register):
                     return "pass", ep.value or str(ep)
         return "fail", "entry point not found or register missing"
     except Exception as e:

@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 import os
 from collections.abc import Mapping
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError, HermesSubprocessLlm
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
 from cluxion_effort_ultracode.core.ports import LlmPort
-import importlib.resources
-import json
-from pathlib import Path
 from cluxion_effort_ultracode.doctor import render_json, run_doctor
 
 CONSENSUS_SCHEMA: dict[str, Any] = {
@@ -180,7 +179,6 @@ def _int_arg(args: Mapping[str, object], key: str, *, default: int) -> int:
 
 
 def _handle_doctor(args: dict[str, object], **_: object) -> str:
-    verbose = bool(args.get("verbose", False))
     pkg = "cluxion_effort_ultracode.doctor"
     catalog_path = Path(str(importlib.resources.files(pkg).joinpath("catalog.json")))
     result = run_doctor(

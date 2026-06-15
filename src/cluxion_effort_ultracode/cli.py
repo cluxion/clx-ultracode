@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import importlib.resources
 import json
 import sys
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from cluxion_effort_ultracode.adapters import CallableLlmAdapter
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
 from cluxion_effort_ultracode.doctor import render_json, render_text, run_doctor
-import importlib.resources
-from pathlib import Path
 
 
 class _ScriptedConsensusLlm:
