@@ -37,6 +37,8 @@ The package follows the Part 2 dependency-inversion requirement:
 - `src/cluxion_effort_ultracode/core/consensus.py` contains the deterministic algorithm.
 - `src/cluxion_effort_ultracode/adapters/callable_llm.py` is a reference adapter for tests and
   plain Python use.
+- `src/cluxion_effort_ultracode/adapters/hermes_llm.py` calls the active Hermes model through
+  `hermes -z` and adapts stdout into the `LlmPort` contract.
 - `src/cluxion_effort_ultracode/plugin.py` is a thin Hermes-facing shim.
 
 The portable core imports no host SDK and knows no Hermes, Claude, Codex, OpenAI, or workflow host
@@ -121,22 +123,54 @@ v0.1 ships only deterministic mock adapters at the CLI boundary:
 - `mock-unanimous`
 - `mock-no-consensus`
 
-This keeps tests and local smoke runs network-free. A real Hermes/Codex/Workflow adapter should be
-added by implementing the `LlmPort` contract.
+This keeps tests and local smoke runs network-free. The Hermes plugin path uses
+`HermesSubprocessLlm`; other hosts can add adapters by implementing the `LlmPort` contract.
 
 ## Hermes Shim
 
-`plugin.py` exposes `register(ctx)` and attempts to register a `cluxion_consensus` tool through
-common host methods:
+`plugin.py` exposes `register(ctx)` and registers `cluxion_consensus` through the real Hermes
+PluginContext contract:
 
-- `ctx.register_tool(name, callable)`
-- `ctx.add_tool(name, callable)`
-- `ctx.tool(name=...)(callable)`
-- dictionary insertion for test harnesses
+```python
+ctx.register_tool(
+    name="cluxion_consensus",
+    toolset="ultracode",
+    schema=CONSENSUS_SCHEMA,
+    handler=handler,
+    emoji="🧠",
+)
+```
 
-The shim is intentionally conservative. If the host context does not expose `complete(...)` or
-`llm.complete(...)`, the registered tool returns an honest `llm_port_unavailable` error instead of
-pretending that consensus ran.
+`CONSENSUS_SCHEMA` is a full function spec: `{name, description, parameters}`. Hermes wraps this
+verbatim as `{"type": "function", "function": schema}` before exposing it to the model, so the
+schema is not a partial parameter object.
+
+The handler accepts `(args: dict, **kwargs)` and returns a JSON string:
+
+- success: `{"ok": true, "result": {...}}`
+- failure: `{"ok": false, "error": "...", "message": "..."}`
+
+For real LLM work, the handler builds `HermesSubprocessLlm`, which runs the official one-shot CLI:
+
+```bash
+hermes -z "<prompt>"
+```
+
+Structured calls append a strict instruction asking for one JSON object matching the requested
+schema, parse stdout, strip simple Markdown code fences, and retry once with a stricter instruction
+if JSON parsing fails. If the configured Hermes binary is missing, the handler returns
+`ok:false` with a PATH/configuration hint.
+
+Runtime knobs:
+
+- `CLUXION_EFFORT_ULTRACODE_HERMES_BINARY`: defaults to `hermes`.
+- `CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT`: defaults to 120 seconds per call.
+- `CLUXION_EFFORT_ULTRACODE_HERMES_MODEL`: optional `--model` override for `hermes -z`.
+
+Cost note: `cluxion_consensus` is an opt-in deep-deliberation tool. Worst-case subprocess/model
+fan-out is `agents_count * (max_rounds + 1)` Hermes calls. The default `agents=3, rounds=3` can
+therefore make up to 12 `hermes -z` calls, though the engine stops early if round-0 or a debate
+round reaches unanimity.
 
 ## Broader Ultracode Porting Deferred
 
@@ -154,7 +188,7 @@ The rest of the master spec should be added as separate portable core modules an
 Recommended build order:
 
 1. Add a `RuntimeProfile` and `LogPort` so all degraded paths are visible.
-2. Add a real Hermes adapter after confirming the host registration and completion contracts.
+2. Replace subprocess JSON parsing with native structured output if Hermes exposes it.
 3. Add a workflow-agent adapter if the host can spawn independent sessions.
 4. Add journal/transcript persistence before long-running orchestration.
 5. Add scheduler and fan-out primitives.
@@ -163,8 +197,7 @@ Recommended build order:
 
 ## Open Questions
 
-- What exact Hermes plugin registration API should be treated as canonical?
-- Does Hermes expose native JSON schema enforcement, or should the adapter validate and retry?
+- Does Hermes expose native JSON schema enforcement that should replace subprocess JSON parsing?
 - Can Hermes spawn isolated sub-agent contexts, or is the first real adapter a single-session
   completion adapter?
 - Where should durable journals live for Cluxion/Hermes sessions?
