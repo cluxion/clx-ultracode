@@ -90,13 +90,24 @@ def test_warn_only_is_ok():
     assert r.summary == "ok"
 
 
-def test_critical_skip_marks_degraded_summary():
+def test_critical_skip_marks_degraded_summary(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: None,
+    )
+    # Exclude probes that FAIL (not skip) when hermes is absent; we test probe-level SKIP here.
+    hermes_absent_fail_probes = {
+        "hermes_on_path",
+        "hermes_version",
+        "hermes_oneshot_flag",
+        "toolset_valid",
+    }
+    probes = {k: v for k, v in PROBES.items() if k not in hermes_absent_fail_probes}
     cat = _catalog_path()
-    partial = {k: v for k, v in PROBES.items() if k != "hermes_binary_available"}
     result = run_doctor(
         cwd=Path.cwd(),
         catalog_path=cat,
-        probes=partial,
+        probes=probes,
         plugin="effort-ultracode",
         version="0.1.4",
     )
@@ -109,6 +120,16 @@ def test_critical_skip_marks_degraded_summary():
     assert payload["ok"] is False
 
 
+def test_hermes_binary_available_passes_when_present(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: "/usr/local/bin/hermes",
+    )
+    status, detail = PROBES["hermes_binary_available"](_doctor_ctx())
+    assert status == "pass"
+    assert detail == "/usr/local/bin/hermes"
+
+
 def test_hermes_static_critical_probes_registered():
     for name in ("hermes_binary_available", "hermes_z_flag_support"):
         assert name in PROBES
@@ -116,6 +137,11 @@ def test_hermes_static_critical_probes_registered():
 
 
 def test_hermes_z_flag_support_parses_help(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: "/usr/local/bin/hermes",
+    )
+
     def _help_run(cmd):
         return subprocess.CompletedProcess(
             args=cmd,
@@ -130,7 +156,21 @@ def test_hermes_z_flag_support_parses_help(monkeypatch):
     assert detail == "present"
 
 
-def test_static_probes_do_not_skip():
+def test_hermes_z_flag_support_skips_when_absent(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: None,
+    )
+    status, detail = PROBES["hermes_z_flag_support"](_doctor_ctx())
+    assert status == "skip"
+    assert "cannot verify" in detail
+
+
+def test_static_probes_do_not_skip(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: "/usr/local/bin/hermes",
+    )
     ctx = _doctor_ctx()
     static_probes = (
         "consensus_schema_contract",

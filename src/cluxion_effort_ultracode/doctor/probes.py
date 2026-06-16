@@ -35,7 +35,7 @@ def hermes_binary_available(ctx: DoctorContext) -> tuple[str, str]:
     p = shutil.which(binary)
     if p:
         return "pass", str(p)
-    return "fail", "not found on PATH"
+    return "skip", "hermes binary not on PATH — cannot verify"
 
 
 @_register("hermes_version")
@@ -63,6 +63,9 @@ def hermes_oneshot_flag(ctx: DoctorContext) -> tuple[str, str]:
 
 @_register("hermes_z_flag_support")
 def hermes_z_flag_support(ctx: DoctorContext) -> tuple[str, str]:
+    binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", ctx.hermes_bin)
+    if shutil.which(binary) is None:
+        return "skip", "hermes binary not on PATH — cannot verify"
     try:
         cp = ctx.run([ctx.hermes_bin, "--help"])
         out = cp.stdout + cp.stderr
