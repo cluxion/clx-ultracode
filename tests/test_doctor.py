@@ -90,7 +90,7 @@ def test_warn_only_is_ok():
     assert r.summary == "ok"
 
 
-def test_critical_skip_marks_degraded_summary(monkeypatch):
+def test_critical_skip_does_not_degrade_summary(monkeypatch):
     monkeypatch.setattr(
         "cluxion_effort_ultracode.doctor.probes.shutil.which",
         lambda _: None,
@@ -113,11 +113,12 @@ def test_critical_skip_marks_degraded_summary(monkeypatch):
     )
     statuses = {c.check_id: c.status for c in result.checks}
     assert statuses["hermes_binary_available"] == "skip"
-    assert result.summary == "degraded"
-    assert result.ok is False
+    assert statuses["hermes_subprocess_launchable"] == "skip"
+    assert result.summary == "ok"
+    assert result.ok is True
     payload = json.loads(render_json(result))
-    assert payload["summary"] == "degraded"
-    assert payload["ok"] is False
+    assert payload["summary"] == "ok"
+    assert payload["ok"] is True
 
 
 def test_hermes_binary_available_passes_when_present(monkeypatch):
@@ -131,9 +132,8 @@ def test_hermes_binary_available_passes_when_present(monkeypatch):
 
 
 def test_hermes_static_critical_probes_registered():
-    for name in ("hermes_binary_available", "hermes_z_flag_support"):
+    for name in ("hermes_binary_available", "hermes_subprocess_launchable", "hermes_z_flag_support"):
         assert name in PROBES
-    assert "hermes_subprocess_launchable" not in PROBES
 
 
 def test_hermes_z_flag_support_parses_help(monkeypatch):
@@ -209,3 +209,84 @@ def test_hermes_timeout_configured_rejects_invalid(monkeypatch):
 def test_dead_probes_removed():
     for dead in ("abi3_wheel_compatible", "sqlite_wal_mode_compatible", "import_availability"):
         assert dead not in PROBES
+
+
+def _mock_healthy_hermes_run(cmd):
+    if "--version" in cmd:
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="Hermes Agent v0.1.7",
+            stderr="",
+        )
+    if "--help" in cmd:
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="usage: hermes [-z] [--oneshot PROMPT]",
+            stderr="",
+        )
+    if len(cmd) >= 2 and cmd[1] == "tools":
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ultracode", stderr="")
+    return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+
+def test_hermes_subprocess_launchable_doctor_invariants(monkeypatch):
+    cat = _catalog_path()
+    doctor_kwargs = {
+        "cwd": Path.cwd(),
+        "catalog_path": cat,
+        "probes": PROBES,
+        "plugin": "effort-ultracode",
+        "version": "0.1.4",
+    }
+
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: "/usr/local/bin/hermes",
+    )
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.framework._make_runner",
+        lambda timeout=8.0: _mock_healthy_hermes_run,
+    )
+    healthy = run_doctor(**doctor_kwargs)
+    statuses = {c.check_id: c.status for c in healthy.checks}
+    assert statuses["hermes_subprocess_launchable"] == "pass"
+    assert healthy.ok is True
+    assert json.loads(render_json(healthy))["ok"] is True
+
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: None,
+    )
+    hermes_absent_fail_probes = {
+        "hermes_on_path",
+        "hermes_version",
+        "hermes_oneshot_flag",
+        "toolset_valid",
+    }
+    absent_probes = {k: v for k, v in PROBES.items() if k not in hermes_absent_fail_probes}
+    absent = run_doctor(**{**doctor_kwargs, "probes": absent_probes})
+    statuses = {c.check_id: c.status for c in absent.checks}
+    assert statuses["hermes_subprocess_launchable"] == "skip"
+    assert absent.ok is True
+
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.probes.shutil.which",
+        lambda _: "/usr/local/bin/hermes",
+    )
+
+    def _broken_launch(cmd):
+        if "--version" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=127, stdout="", stderr="Permission denied")
+        return _mock_healthy_hermes_run(cmd)
+
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.framework._make_runner",
+        lambda timeout=8.0: _broken_launch,
+    )
+    failed = run_doctor(**doctor_kwargs)
+    statuses = {c.check_id: c.status for c in failed.checks}
+    assert statuses["hermes_subprocess_launchable"] == "fail"
+    assert failed.ok is False
+    assert failed.summary == "fail"

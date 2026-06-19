@@ -61,6 +61,21 @@ def hermes_oneshot_flag(ctx: DoctorContext) -> tuple[str, str]:
         return "fail", f"run error: {e}"
 
 
+@_register("hermes_subprocess_launchable")
+def hermes_subprocess_launchable(ctx: DoctorContext) -> tuple[str, str]:
+    binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", ctx.hermes_bin)
+    if shutil.which(binary) is None:
+        return "skip", "hermes binary not on PATH — cannot verify"
+    try:
+        cp = ctx.run([ctx.hermes_bin, "--version"])
+        if cp.returncode == 0:
+            return "pass", cp.stdout.strip() or "launched"
+        detail = cp.stdout.strip() or cp.stderr.strip() or f"exit {cp.returncode}"
+        return "fail", detail
+    except Exception as e:
+        return "fail", f"launch error: {e}"
+
+
 @_register("hermes_z_flag_support")
 def hermes_z_flag_support(ctx: DoctorContext) -> tuple[str, str]:
     binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", ctx.hermes_bin)
