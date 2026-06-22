@@ -54,6 +54,15 @@ cluxion-ultracode doctor --json   # 구조화 출력
 
 Hermes 안에서는 `ultracode_doctor` 도구로도 노출됩니다.
 
+## Hermes 슬래시 커맨드 (0.1.10+)
+
+```
+/cluxion-consensus 이 리팩터링 방향을 채택할까?
+/ultracode-doctor
+```
+
+`/` 입력 시 🔌로 표시 · consensus는 도구 `cluxion_consensus`와 동일.
+
 ## 라이선스
 
 Apache-2.0
@@ -111,6 +120,15 @@ cluxion-ultracode doctor --json   # structured output
 ```
 
 Also exposed inside Hermes as the `ultracode_doctor` tool.
+
+## Hermes slash commands (0.1.10+)
+
+```
+/cluxion-consensus Should we adopt this refactor direction?
+/ultracode-doctor
+```
+
+Shows in `/` autocomplete with 🔌 · consensus matches tool `cluxion_consensus`.
 
 ## License
 
