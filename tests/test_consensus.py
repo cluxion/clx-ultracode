@@ -14,6 +14,16 @@ from cluxion_effort_ultracode.adapters import CallableLlmAdapter
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError, normalize_stance
 
 
+def test_consensus_engine_rejects_rounds_above_hard_cap() -> None:
+    with pytest.raises(ValueError, match="max_rounds must be <= "):
+        ConsensusEngine(ScriptedLlm([]), max_rounds=999)
+
+
+def test_consensus_engine_rejects_agent_counts_above_hard_cap() -> None:
+    with pytest.raises(ValueError, match="agents_count must be <= "):
+        ConsensusEngine(ScriptedLlm([]), agents_count=999)
+
+
 class ScriptedLlm:
     def __init__(self, outputs: list[dict[str, Any]]) -> None:
         self.outputs = deque(outputs)

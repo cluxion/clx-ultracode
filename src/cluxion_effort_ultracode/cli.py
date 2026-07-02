@@ -14,6 +14,7 @@ from typing import Any
 
 from cluxion_effort_ultracode.adapters import CallableLlmAdapter
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
+from cluxion_effort_ultracode.core.consensus import MAX_AGENTS, MAX_ROUNDS
 from cluxion_effort_ultracode.doctor import render_json, render_text, run_doctor
 
 
@@ -53,8 +54,8 @@ def _build_parser() -> argparse.ArgumentParser:
     consensus = subparsers.add_parser("consensus", help="Run an adversarial unanimous-consensus debate")
     consensus.add_argument("--question", required=True, help="Decision, proposal, or question to decide")
     consensus.add_argument("--context", default="", help="Optional context supplied to every agent")
-    consensus.add_argument("--rounds", type=int, default=3, help="Maximum debate rounds after round 0")
-    consensus.add_argument("--agents", type=int, default=3, help="Number of agents, default 3")
+    consensus.add_argument("--rounds", type=int, default=3, help=f"Maximum debate rounds after round 0, capped at {MAX_ROUNDS}")
+    consensus.add_argument("--agents", type=int, default=3, help=f"Number of agents, default 3, capped at {MAX_AGENTS}")
     consensus.add_argument(
         "--adapter",
         choices=["hermes", "mock-unanimous", "mock-no-consensus"],

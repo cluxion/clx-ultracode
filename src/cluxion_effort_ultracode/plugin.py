@@ -12,6 +12,7 @@ from typing import Any
 
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError, HermesSubprocessLlm
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
+from cluxion_effort_ultracode.core.consensus import MAX_AGENTS, MAX_ROUNDS
 from cluxion_effort_ultracode.core.ports import LlmPort
 from cluxion_effort_ultracode.doctor import render_json, run_doctor
 
@@ -38,12 +39,14 @@ CONSENSUS_SCHEMA: dict[str, Any] = {
                 "description": "Maximum debate rounds after independent round 0.",
                 "default": 3,
                 "minimum": 0,
+                "maximum": MAX_ROUNDS,
             },
             "agents": {
                 "type": "integer",
                 "description": "Number of independent agents in the debate.",
                 "default": 3,
                 "minimum": 2,
+                "maximum": MAX_AGENTS,
             },
         },
         "required": ["question"],

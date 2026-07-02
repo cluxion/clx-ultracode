@@ -19,6 +19,9 @@ from cluxion_effort_ultracode.core.types import (
     Dissent,
 )
 
+MAX_AGENTS = 8
+MAX_ROUNDS = 8
+
 POSITION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -78,8 +81,12 @@ class ConsensusEngine:
     ) -> None:
         if agents_count < 2:
             raise ValueError("agents_count must be at least 2")
+        if agents_count > MAX_AGENTS:
+            raise ValueError(f"agents_count must be <= {MAX_AGENTS}")
         if max_rounds < 0:
             raise ValueError("max_rounds must be non-negative")
+        if max_rounds > MAX_ROUNDS:
+            raise ValueError(f"max_rounds must be <= {MAX_ROUNDS}")
         self.llm = llm
         self.agents_count = agents_count
         self.max_rounds = max_rounds

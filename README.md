@@ -18,7 +18,7 @@ pip install cluxion-agentplugin-effort-ultracode
 
 ### Hermes Agent에서 사용
 
-`~/.hermes/config.yaml` 에 추가한 뒤 Hermes를 재시작하세요.
+Hermes의 플러그인 설정에 추가한 뒤 Hermes를 재시작하세요.
 
 ```yaml
 plugins:
@@ -27,6 +27,31 @@ plugins:
 ```
 
 Hermes를 통해 제공되는 로컬 모델(vLLM/MLX)에서도 동일하게 동작합니다.
+
+### Codex CLI에서 사용
+
+로컬 checkout:
+
+```bash
+codex plugin marketplace add cluxion-local /path/to/cluxion-Agentplugin-Effort-Ultracode
+codex plugin add cluxion-agentplugin-effort-ultracode@cluxion-local
+```
+
+Git URL:
+
+```bash
+codex plugin marketplace add cluxion https://github.com/cluxion/cluxion-Agentplugin-Effort-Ultracode
+codex plugin add cluxion-agentplugin-effort-ultracode@cluxion
+```
+
+Codex는 루트 `.codex-plugin/plugin.json`, `commands/`, `skills/`를 읽습니다. `[plugins.<name>] command`
+형태의 별도 config snippet은 사용하지 않습니다.
+
+### Claude Code에서 사용
+
+같은 checkout을 Claude Code 플러그인으로 설치하면 루트 `.claude-plugin/plugin.json`, `commands/`,
+`skills/`가 사용됩니다. 명령과 스킬은 `cluxion-ultracode` CLI를 호출하고, host agent가 실행과 최종
+응답을 소유합니다.
 
 ## 사용
 
@@ -54,14 +79,23 @@ cluxion-ultracode doctor --json   # 구조화 출력
 
 Hermes 안에서는 `ultracode_doctor` 도구로도 노출됩니다.
 
-## Hermes 슬래시 커맨드 (0.1.10+)
+## 슬래시 커맨드 (0.1.11+)
+
+Codex/Claude Code 플러그인 명령:
 
 ```
 /cluxion-consensus 이 리팩터링 방향을 채택할까?
 /ultracode-doctor
 ```
 
-`/` 입력 시 🔌로 표시 · consensus는 도구 `cluxion_consensus`와 동일.
+Hermes 플러그인 명령:
+
+```
+/cluxion-consensus 이 리팩터링 방향을 채택할까?
+/ultracode-doctor
+```
+
+Hermes에서는 `/` 입력 시 🔌로 표시 · consensus는 도구 `cluxion_consensus`와 동일.
 
 ## 라이선스
 
@@ -85,7 +119,7 @@ pip install cluxion-agentplugin-effort-ultracode
 
 ### Use with Hermes Agent
 
-Add it to `~/.hermes/config.yaml`, then restart Hermes:
+Add it to the Hermes plugin configuration, then restart Hermes:
 
 ```yaml
 plugins:
@@ -94,6 +128,31 @@ plugins:
 ```
 
 It works the same with local models (vLLM/MLX) served through Hermes.
+
+### Use with Codex CLI
+
+Local checkout:
+
+```bash
+codex plugin marketplace add cluxion-local /path/to/cluxion-Agentplugin-Effort-Ultracode
+codex plugin add cluxion-agentplugin-effort-ultracode@cluxion-local
+```
+
+Git URL:
+
+```bash
+codex plugin marketplace add cluxion https://github.com/cluxion/cluxion-Agentplugin-Effort-Ultracode
+codex plugin add cluxion-agentplugin-effort-ultracode@cluxion
+```
+
+Codex reads the root `.codex-plugin/plugin.json`, `commands/`, and `skills/`. Do not use a
+`[plugins.<name>] command` config snippet; Codex plugins are marketplace plugins.
+
+### Use with Claude Code
+
+Install the same checkout as a Claude Code plugin. Claude Code reads the root
+`.claude-plugin/plugin.json`, `commands/`, and `skills/`. The commands and skill call the
+`cluxion-ultracode` CLI; the host agent owns execution and final answers.
 
 ## Use
 
@@ -121,14 +180,23 @@ cluxion-ultracode doctor --json   # structured output
 
 Also exposed inside Hermes as the `ultracode_doctor` tool.
 
-## Hermes slash commands (0.1.10+)
+## Slash commands (0.1.11+)
+
+Codex/Claude Code plugin commands:
 
 ```
 /cluxion-consensus Should we adopt this refactor direction?
 /ultracode-doctor
 ```
 
-Shows in `/` autocomplete with 🔌 · consensus matches tool `cluxion_consensus`.
+Hermes plugin commands:
+
+```
+/cluxion-consensus Should we adopt this refactor direction?
+/ultracode-doctor
+```
+
+In Hermes, shows in `/` autocomplete with 🔌 · consensus matches tool `cluxion_consensus`.
 
 ## License
 
