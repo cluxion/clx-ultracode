@@ -1,0 +1,15 @@
+{
+  "name": "cluxion",
+  "description": "Cluxion agent plugins marketplace",
+  "owner": {
+    "name": "cluxion"
+  },
+  "plugins": [
+    {
+      "name": "cluxion-agentplugin-effort-ultracode",
+      "description": "Multi-agent consensus effort harness with hard agent/round caps.",
+      "version": "0.1.11",
+      "source": "./"
+    }
+  ]
+}
