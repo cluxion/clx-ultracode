@@ -2,7 +2,9 @@
   "name": "cluxion-agentplugin-effort-ultracode",
   "version": "0.1.11",
   "description": "Cluxion Effort-Ultracode: portable 3-agent adversarial consensus debate for Codex, Claude Code, and Hermes.",
-  "author": "cluxion",
+  "author": {
+    "name": "cluxion"
+  },
   "commands": "./commands",
   "skills": "./skills"
 }
