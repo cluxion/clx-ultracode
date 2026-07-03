@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from collections import deque
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -19,6 +21,10 @@ from cluxion_effort_ultracode.core.journal import (
     build_header,
 )
 from cluxion_effort_ultracode.core.journal_lifecycle import gc_journals
+
+
+def mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 class ScriptedLlm:
@@ -71,6 +77,38 @@ def header(run_id: str = "abc123", *, question: str = "Q?", home_adapter: str = 
     )
 
 
+def test_journal_is_created_lazily_with_private_modes(tmp_path: Path) -> None:
+    run_header = header()
+    journal = DebateJournal.start(run_header, home=tmp_path)
+
+    assert not journal.path.exists()
+
+    ConsensusEngine(
+        JournaledLlm(ScriptedLlm([position("Adopt"), position("ADOPT.")]), journal),
+        agents_count=2,
+        max_rounds=0,
+    ).decide("Q?", context="ctx")
+
+    assert mode(journal.path.parent) == 0o700
+    assert mode(journal.path) == 0o600
+    records = json.loads(journal.path.read_text(encoding="utf-8").splitlines()[0])
+    assert records["type"] == "header"
+
+
+def test_resume_append_tightens_existing_journal_modes(tmp_path: Path) -> None:
+    run_header = header()
+    journal = DebateJournal.start(run_header, home=tmp_path)
+    journal.append({"type": "call", "run_id": "abc123"})
+    os.chmod(journal.path.parent, 0o755)
+    os.chmod(journal.path, 0o644)
+
+    resumed = DebateJournal.resume("abc123", run_header, home=tmp_path)
+    resumed.append({"type": "result", "run_id": "abc123"})
+
+    assert mode(journal.path.parent) == 0o700
+    assert mode(journal.path) == 0o600
+
+
 def test_crash_then_resume_replays_prefix_and_continues(tmp_path: Path) -> None:
     run_header = header()
     journal = DebateJournal.start(run_header, home=tmp_path)
@@ -95,7 +133,8 @@ def test_crash_then_resume_replays_prefix_and_continues(tmp_path: Path) -> None:
 
 def test_resume_mismatch_reports_changed_question(tmp_path: Path) -> None:
     run_header = header()
-    DebateJournal.start(run_header, home=tmp_path)
+    journal = DebateJournal.start(run_header, home=tmp_path)
+    journal.append({"type": "call", "run_id": "abc123"})
     changed = header(question="Different?")
 
     with pytest.raises(ResumeMismatch) as exc:

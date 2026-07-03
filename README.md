@@ -77,6 +77,10 @@ cluxion-ultracode consensus --question "이 제안을 채택할까?" --rounds 3 
 
 만장일치면 결정과 근거를, 아니면 반대 의견을 포함한 `no_consensus`를 반환합니다. 예산 초과나 quorum
 상실로 중단되면 `status: "aborted"`, `abort_reason`, `rounds_completed`, partial `transcript`를 반환합니다.
+검증 실패는 `invalid_question`, `invalid_models`, `invalid_agents`, `invalid_rounds`, `invalid_budget`,
+`invalid_timeout` 중 하나를 `error`로 반환하고 기존 `message`를 유지합니다. LLM 호출 전 실패는 저널 파일을
+남기지 않으며, 그런 run_id resume은 `journal_not_found`를 반환합니다. 저널 디렉터리는 `0700`, 파일은
+`0600`으로 저장됩니다.
 
 ## 점검
 
@@ -90,7 +94,7 @@ cluxion-ultracode doctor --json   # 구조화 출력
 
 Hermes 안에서는 `ultracode_doctor` 도구로도 노출됩니다.
 
-## 슬래시 커맨드 (0.1.15)
+## 슬래시 커맨드 (0.1.16)
 
 Codex/Claude Code 플러그인 명령:
 
@@ -191,7 +195,11 @@ seats.
 
 On unanimity it returns the decision and rationale; otherwise a `no_consensus` with the dissent.
 If budget or quorum aborts the run, it returns `status: "aborted"`, `abort_reason`,
-`rounds_completed`, and the partial `transcript`.
+`rounds_completed`, and the partial `transcript`. Validation failures use `invalid_question`,
+`invalid_models`, `invalid_agents`, `invalid_rounds`, `invalid_budget`, or `invalid_timeout` as
+`error` while keeping the original `message`. Failures before the first LLM call leave no journal
+file; resuming that run_id returns `journal_not_found`. Journal directories are `0700` and journal
+files are `0600`.
 
 ## Diagnostics
 
@@ -205,7 +213,7 @@ cluxion-ultracode doctor --json   # structured output
 
 Also exposed inside Hermes as the `ultracode_doctor` tool.
 
-## Slash commands (0.1.15)
+## Slash commands (0.1.16)
 
 Codex/Claude Code plugin commands:
 

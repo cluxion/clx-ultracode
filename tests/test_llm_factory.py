@@ -4,6 +4,7 @@ import pytest
 
 from cluxion_effort_ultracode.adapters.codex_llm import CodexSubprocessLlm
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesSubprocessLlm
+from cluxion_effort_ultracode.core.errors import validation_error_code
 from cluxion_effort_ultracode.llm_factory import default_llm, timeout_from_env
 
 
@@ -40,3 +41,10 @@ def test_timeout_from_env_remains_shared_agent_timeout(monkeypatch: pytest.Monke
     monkeypatch.setenv("CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT", "9")
 
     assert timeout_from_env() == 9
+
+
+def test_validation_error_code_handles_timeout_env_name() -> None:
+    assert (
+        validation_error_code(ValueError("CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT must be numeric"))
+        == "invalid_timeout"
+    )

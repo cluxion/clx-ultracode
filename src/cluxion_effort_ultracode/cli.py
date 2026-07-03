@@ -24,6 +24,7 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
+from cluxion_effort_ultracode.core.errors import validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
     JournaledLlm,
@@ -36,7 +37,7 @@ from cluxion_effort_ultracode.core.journal import (
     new_run_id,
     read_records,
 )
-from cluxion_effort_ultracode.core.journal_lifecycle import WARN_SIZE_BYTES, gc_journals, list_journals
+from cluxion_effort_ultracode.core.journal_lifecycle import gc_journals, list_journals
 from cluxion_effort_ultracode.doctor import render_json, render_text, run_doctor
 
 
@@ -182,7 +183,7 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": "resume_mismatch", "fields": exc.fields}, ensure_ascii=False))
         return 1
     except ResumeNotFound as exc:
-        print(json.dumps({"ok": False, "error": "resume_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": "journal_not_found", "run_id": str(exc)}, ensure_ascii=False))
         return 1
     except HermesExecutableNotFoundError as exc:
         print(
@@ -219,9 +220,10 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
         )
         return 1
     except (ConsensusProtocolError, ValueError) as exc:
+        error = type(exc).__name__ if isinstance(exc, ConsensusProtocolError) else validation_error_code(exc)
         print(
             json.dumps(
-                {"ok": False, "error": type(exc).__name__, "message": str(exc), **journal_info},
+                {"ok": False, "error": error, "message": str(exc), **journal_info},
                 ensure_ascii=False,
             )
         )
@@ -383,9 +385,10 @@ def _journals(namespace: argparse.Namespace) -> int:
     try:
         if namespace.journal_command == "list":
             payload = list_journals()
-            if int(payload["total_bytes"]) > WARN_SIZE_BYTES:
+            warn_size = int(payload["warn_size_bytes"])
+            if int(payload["total_bytes"]) > warn_size:
                 print(
-                    f"warning: journal directory exceeds {WARN_SIZE_BYTES} bytes: {payload['total_bytes']}",
+                    f"warning: journal directory exceeds {warn_size} bytes: {payload['total_bytes']}",
                     file=sys.stderr,
                 )
         elif namespace.journal_command == "show":
@@ -398,10 +401,10 @@ def _journals(namespace: argparse.Namespace) -> int:
         else:
             raise ValueError(f"unknown journals command: {namespace.journal_command}")
     except ResumeNotFound as exc:
-        print(json.dumps({"ok": False, "error": "resume_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": "journal_not_found", "run_id": str(exc)}, ensure_ascii=False))
         return 1
     except ValueError as exc:
-        print(json.dumps({"ok": False, "error": "ValueError", "message": str(exc)}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "error": validation_error_code(exc), "message": str(exc)}, ensure_ascii=False))
         return 1
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

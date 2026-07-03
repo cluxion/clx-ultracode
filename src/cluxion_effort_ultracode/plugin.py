@@ -18,6 +18,7 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
+from cluxion_effort_ultracode.core.errors import validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
     JournaledLlm,
@@ -190,7 +191,7 @@ def build_consensus_handler(llm_factory: object | None = None):
 
 def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]:
     if not isinstance(args, Mapping):
-        return {"ok": False, "error": "ValueError", "message": "args must be an object"}
+        return {"ok": False, "error": "invalid_question", "message": "args must be an object"}
 
     try:
         _reject_unknown_args(args)
@@ -246,7 +247,7 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
     except ResumeMismatch as exc:
         return {"ok": False, "error": "resume_mismatch", "fields": exc.fields}
     except ResumeNotFound as exc:
-        return {"ok": False, "error": "resume_not_found", "run_id": str(exc)}
+        return {"ok": False, "error": "journal_not_found", "run_id": str(exc)}
     except HermesExecutableNotFoundError as exc:
         return {
             "ok": False,
@@ -262,7 +263,8 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             "hint": ("Ensure the codex executable is on PATH, or configure CLUXION_EFFORT_ULTRACODE_CODEX_BINARY."),
         }
     except (ConsensusProtocolError, ValueError) as exc:
-        return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
+        error = type(exc).__name__ if isinstance(exc, ConsensusProtocolError) else validation_error_code(exc)
+        return {"ok": False, "error": error, "message": str(exc)}
     return {"ok": True, "result": asdict(result)}
 
 

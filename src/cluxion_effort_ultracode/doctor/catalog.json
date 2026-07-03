@@ -274,7 +274,7 @@
     "category": "config",
     "severity": "high",
     "what_it_checks": "Whether CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT env var (if set) is numeric and positive",
-    "failure_symptom": "Handler returns {ok: false, error: 'ValueError', message: 'CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT must be numeric|greater than zero'} at plugin invocation",
+    "failure_symptom": "Handler returns {ok: false, error: 'invalid_timeout', message: 'CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT must be numeric|greater than zero'} at plugin invocation",
     "likely_causes": [
       "CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT set to non-numeric value (e.g., '30s', 'infinity')",
       "CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT set to 0 or negative number",

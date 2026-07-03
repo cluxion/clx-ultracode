@@ -36,7 +36,9 @@ Worst-case cost: `agents * (rounds + 1)` model calls plus `tokens_spent`. Token 
 the backend reports usage, otherwise `estimated: true` via chars/4. Every result includes `run_id` and
 `journal_path`; resume replays matching calls into `tokens_replayed` and only live suffix calls
 consume `tokens_spent`/`--budget-tokens`. Completed journals can be replayed for deterministic
-debugging.
+debugging. Validation errors use `invalid_question`, `invalid_models`, `invalid_agents`,
+`invalid_rounds`, `invalid_budget`, or `invalid_timeout`; missing journals on resume return
+`journal_not_found`.
 
 ## Journals
 
@@ -55,7 +57,7 @@ Rules:
 4. If `status` is `aborted`, report `abort_reason`, `rounds_completed`, and the partial transcript.
 5. Treat `abort_reason: "token_budget_exceeded"` as an honest budget stop, not a failed consensus.
 6. Do not raise `--rounds` or `--agents` past the CLI hard caps.
-7. On resume errors, report `resume_mismatch` fields instead of mixing runs.
+7. On resume errors, report `resume_mismatch` fields or `journal_not_found` instead of mixing runs.
 8. Never claim checks were run unless the host actually ran them.
 
 ## Doctor

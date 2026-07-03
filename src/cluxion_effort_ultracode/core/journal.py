@@ -81,20 +81,24 @@ def build_header(
 
 
 class DebateJournal:
-    def __init__(self, path: Path, run_id: str, replay_calls: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        run_id: str,
+        replay_calls: list[dict[str, Any]] | None = None,
+        header: Mapping[str, object] | None = None,
+    ) -> None:
         self.path = path
         self.run_id = run_id
         self.replay_calls = replay_calls or []
         self._file: object | None = None
+        self._pending_header = dict(header) if header is not None else None
         self._warned = False
-        self._open_append()
 
     @classmethod
     def start(cls, header: Mapping[str, object], *, home: Path | None = None) -> DebateJournal:
         run_id = str(header["run_id"])
-        journal = cls(journals_dir(home) / f"{run_id}.jsonl", run_id)
-        journal.append(dict(header))
-        return journal
+        return cls(journals_dir(home) / f"{run_id}.jsonl", run_id, header=header)
 
     @classmethod
     def resume(
@@ -118,16 +122,25 @@ class DebateJournal:
         return cls(path, run_id, calls)
 
     def append(self, record: Mapping[str, object]) -> None:
-        if self._file is None:
+        if self._file is None and not self._open_append():
             return
+        if self._pending_header is not None:
+            if not self._write(self._pending_header):
+                return
+            self._pending_header = None
+        self._write(record)
+
+    def _write(self, record: Mapping[str, object]) -> bool:
         payload = dict(record)
         payload.setdefault("schema_version", SCHEMA_VERSION)
         try:
             self._file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
             self._file.flush()
+            return True
         except OSError as exc:
             self._warn_once(f"warning: ultracode journal write failed: {exc}")
             self._file = None
+            return False
 
     def append_result(self, result: object) -> None:
         self.append(
@@ -141,13 +154,25 @@ class DebateJournal:
             }
         )
 
-    def _open_append(self) -> None:
+    def _open_append(self) -> bool:
+        fd: int | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self._file = self.path.open("a", encoding="utf-8")
+            os.chmod(self.path.parent, 0o700)
+            # The plugin home above journals/ may hold other run artifacts;
+            # keep it private too, matching the forgetforge home policy.
+            os.chmod(self.path.parent.parent, 0o700)
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            os.chmod(self.path, 0o600)
+            self._file = os.fdopen(fd, "a", encoding="utf-8")
+            fd = None
+            return True
         except OSError as exc:
+            if fd is not None:
+                os.close(fd)
             self._warn_once(f"warning: ultracode journal disabled: {exc}")
             self._file = None
+            return False
 
     def _warn_once(self, message: str) -> None:
         if not self._warned:

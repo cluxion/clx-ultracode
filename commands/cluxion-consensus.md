@@ -32,3 +32,5 @@ the backend reports usage, otherwise `estimated: true` via chars/4. Budget/quoru
 with `status: "aborted"` and a partial transcript. Every result includes `run_id` and `journal_path`;
 resume replays matching recorded calls into `tokens_replayed` and only live suffix calls consume
 `tokens_spent`/`--budget-tokens`. Completed journals can be replayed for deterministic debugging.
+Validation errors use `invalid_question`, `invalid_models`, `invalid_agents`, `invalid_rounds`,
+`invalid_budget`, or `invalid_timeout`; missing journals on resume return `journal_not_found`.

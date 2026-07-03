@@ -146,6 +146,22 @@ def test_consensus_cli_codex_missing_returns_json_error(capsys):
     assert "CLUXION_EFFORT_ULTRACODE_CODEX_BINARY" in payload["hint"]
 
 
+def test_consensus_cli_adapter_missing_leaves_no_journal_and_resume_is_clear(capsys):
+    with patch(
+        "cluxion_effort_ultracode.llm_factory.default_llm",
+        side_effect=CodexExecutableNotFoundError("Codex executable not found: 'missing-codex'"),
+    ):
+        assert main(["consensus", "--question", "Adopt?", "--adapter", "codex"]) == 1
+
+    first = json.loads(capsys.readouterr().out)
+    assert first["error"] == "codex_not_found"
+    assert not (journals_dir() / f"{first['run_id']}.jsonl").exists()
+
+    assert main(["consensus", "--resume", first["run_id"]]) == 1
+    resumed = json.loads(capsys.readouterr().out)
+    assert resumed == {"ok": False, "error": "journal_not_found", "run_id": first["run_id"]}
+
+
 def test_consensus_cli_exposes_timeout_and_budget_flags(capsys):
     exit_code = main(
         [
@@ -189,7 +205,7 @@ def test_consensus_cli_rejects_empty_model_entries(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 1
     assert payload["ok"] is False
-    assert payload["error"] == "ValueError"
+    assert payload["error"] == "invalid_models"
     assert "models entries" in payload["message"]
 
 
@@ -209,7 +225,7 @@ def test_consensus_cli_rejects_explicit_empty_models(capsys, models: str):
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 1
     assert payload["ok"] is False
-    assert payload["error"] == "ValueError"
+    assert payload["error"] == "invalid_models"
     assert "models entries" in payload["message"]
 
 
@@ -223,7 +239,7 @@ def test_consensus_cli_rejects_huge_agents_before_journal(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert elapsed < 1
     assert exit_code == 1
-    assert payload == {"ok": False, "error": "ValueError", "message": "agents_count must be <= 8"}
+    assert payload == {"ok": False, "error": "invalid_agents", "message": "agents_count must be <= 8"}
     assert not journals_dir().exists()
 
 
@@ -234,8 +250,26 @@ def test_consensus_cli_rejects_empty_question(capsys, question: str):
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 1
     assert payload["ok"] is False
-    assert payload["error"] == "ValueError"
+    assert payload["error"] == "invalid_question"
     assert "question" in payload["message"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "code"),
+    [
+        (["--rounds", "99"], "invalid_rounds"),
+        (["--agent-timeout", "0"], "invalid_timeout"),
+        (["--debate-budget", "0"], "invalid_budget"),
+        (["--budget-tokens", "0"], "invalid_budget"),
+    ],
+)
+def test_consensus_cli_validation_errors_use_semantic_codes(capsys, argv: list[str], code: str):
+    exit_code = main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", *argv])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == code
 
 
 def test_consensus_cli_reads_question_from_stdin(capsys, monkeypatch):
@@ -343,6 +377,18 @@ def test_journals_list_and_show(capsys):
     shown = json.loads(capsys.readouterr().out)
     assert shown["records"][0]["type"] == "header"
     assert shown["records"][1]["type"] == "call"
+
+
+def test_journals_list_warns_when_total_exceeds_threshold(capsys, monkeypatch):
+    directory = journals_dir()
+    directory.mkdir(parents=True)
+    (directory / "abc123.jsonl").write_text(json.dumps({"type": "header", "run_id": "abc123"}) + "\n", encoding="utf-8")
+    monkeypatch.setattr("cluxion_effort_ultracode.core.journal_lifecycle.WARN_SIZE_BYTES", 10)
+
+    assert main(["journals", "list"]) == 0
+
+    captured = capsys.readouterr()
+    assert "warning: journal directory exceeds 10 bytes" in captured.err
 
 
 def test_doctor_json_output_is_stdout_pure(capsys):
