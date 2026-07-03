@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from cluxion_effort_ultracode import plugin
+from cluxion_effort_ultracode.adapters.codex_llm import CodexExecutableNotFoundError
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError
 
 
@@ -74,6 +75,18 @@ class MissingHermesLlm:
         raise HermesExecutableNotFoundError("Hermes executable not found: 'hermes'")
 
 
+class MissingCodexLlm:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: Mapping[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Mapping[str, Any]:
+        del prompt, schema, model
+        raise CodexExecutableNotFoundError("Codex executable not found: 'codex'")
+
+
 class NoCallLlm:
     def complete(
         self,
@@ -118,6 +131,7 @@ def test_register_uses_real_hermes_tool_contract() -> None:
     assert "resume" in schema["parameters"]["properties"]
     assert "budget_tokens" in schema["parameters"]["properties"]
     assert "models" in schema["parameters"]["properties"]
+    assert schema["parameters"]["properties"]["adapter"]["enum"] == ["hermes", "codex"]
 
 
 def test_register_tolerates_host_without_register_tool() -> None:
@@ -167,6 +181,24 @@ def test_consensus_handler_routes_models_and_rejects_empty_entries() -> None:
     assert "models entries" in bad["message"]
 
 
+def test_consensus_handler_routes_codex_adapter_to_default_factory(monkeypatch) -> None:
+    llm = ScriptedLlm([position("yes"), position("YES.")])
+    calls: list[str] = []
+
+    def _default_llm(adapter: str = "hermes", *, timeout_seconds: float | None = None):
+        del timeout_seconds
+        calls.append(adapter)
+        return llm
+
+    monkeypatch.setattr(plugin, "default_llm", _default_llm)
+    payload = json.loads(
+        plugin.build_consensus_handler()({"question": "Should we answer yes?", "rounds": 0, "agents": 2, "adapter": "codex"})
+    )
+
+    assert payload["ok"] is True
+    assert calls == ["codex"]
+
+
 @pytest.mark.parametrize("question", ["", " "])
 def test_consensus_handler_rejects_empty_question(question: str) -> None:
     handler = plugin.build_consensus_handler(lambda: NoCallLlm())
@@ -185,6 +217,16 @@ def test_consensus_handler_returns_honest_missing_hermes_error() -> None:
 
     assert payload["ok"] is False
     assert payload["error"] == "hermes_not_found"
+    assert "PATH" in payload["hint"]
+
+
+def test_consensus_handler_returns_honest_missing_codex_error() -> None:
+    handler = plugin.build_consensus_handler(lambda: MissingCodexLlm())
+
+    payload = json.loads(handler({"question": "Question?", "rounds": 0, "agents": 2, "adapter": "codex"}))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "codex_not_found"
     assert "PATH" in payload["hint"]
 
 

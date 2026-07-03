@@ -6,6 +6,8 @@ from pathlib import Path
 
 
 def test_root_plugin_artifacts_are_version_synced() -> None:
+    from cluxion_effort_ultracode import __version__
+
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     version = pyproject["project"]["version"]
     lockfile = tomllib.loads(Path("uv.lock").read_text(encoding="utf-8"))
@@ -13,6 +15,7 @@ def test_root_plugin_artifacts_are_version_synced() -> None:
     claude = json.loads(Path(".claude-plugin/plugin.json").read_text(encoding="utf-8"))
     codex = json.loads(Path(".codex-plugin/plugin.json").read_text(encoding="utf-8"))
 
+    assert __version__ == version
     assert claude["version"] == version
     assert codex["version"] == version
     assert lockfile["package"][0]["version"] == version

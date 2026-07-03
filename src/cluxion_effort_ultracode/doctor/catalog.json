@@ -18,6 +18,100 @@
     "detection_method": "shutil.which(ctx.hermes_bin) is not None"
   },
   {
+    "check_id": "codex_on_path",
+    "category": "codex_contract",
+    "severity": "critical",
+    "what_it_checks": "codex binary is resolvable on PATH",
+    "failure_symptom": "The Codex adapter cannot start any codex exec model call",
+    "likely_causes": [
+      "Codex CLI not installed",
+      "PATH not exported in this shell/agent env"
+    ],
+    "fix_steps": [
+      "Run: which codex",
+      "If missing, install/repair Codex CLI and ensure its bin dir is on PATH",
+      "For agents, confirm the spawned shell inherits PATH"
+    ],
+    "change_robust": "Uses shutil.which at runtime — independent of any hardcoded path",
+    "detection_method": "shutil.which('codex') is not None"
+  },
+  {
+    "check_id": "codex_binary_available",
+    "category": "install",
+    "severity": "critical",
+    "what_it_checks": "Whether the Codex executable is available on PATH or at the configured CLUXION_EFFORT_ULTRACODE_CODEX_BINARY location",
+    "failure_symptom": "Handler returns {ok: false, error: 'codex_not_found', hint: '..PATH..'} when using adapter='codex'",
+    "likely_causes": [
+      "Codex CLI not installed or PATH does not include codex binary",
+      "CLUXION_EFFORT_ULTRACODE_CODEX_BINARY points to a nonexistent path",
+      "User's shell initialization/venv not active when plugin loads"
+    ],
+    "fix_steps": [
+      "Verify codex is in PATH: run 'which codex'",
+      "If env var CLUXION_EFFORT_ULTRACODE_CODEX_BINARY is set, verify path exists and is executable",
+      "Verify Codex works standalone: codex --version"
+    ],
+    "change_robust": "Detection probes live executable resolution and honors the configured env override.",
+    "detection_method": "shutil.which(os.getenv('CLUXION_EFFORT_ULTRACODE_CODEX_BINARY', 'codex')) is not None"
+  },
+  {
+    "check_id": "codex_version",
+    "category": "codex_contract",
+    "severity": "high",
+    "what_it_checks": "codex --version can be launched",
+    "failure_symptom": "Codex is installed but crashes before adapter calls can run",
+    "likely_causes": [
+      "Broken Codex CLI install",
+      "Node wrapper cannot find the native Codex binary",
+      "Binary permissions or architecture mismatch"
+    ],
+    "fix_steps": [
+      "Run: codex --version",
+      "If it fails, reinstall or update Codex CLI",
+      "If using CLUXION_EFFORT_ULTRACODE_CODEX_BINARY, verify that binary directly supports --version"
+    ],
+    "change_robust": "Launches the live binary instead of trusting package metadata.",
+    "detection_method": "`codex --version` exits 0 and prints output"
+  },
+  {
+    "check_id": "codex_subprocess_launchable",
+    "category": "native_backend",
+    "severity": "critical",
+    "what_it_checks": "Whether the configured codex subprocess can be launched",
+    "failure_symptom": "CodexExecutableNotFoundError or ConsensusProtocolError before any model response",
+    "likely_causes": [
+      "codex binary has wrong permissions",
+      "codex wrapper has a broken shebang",
+      "Codex native binary is missing or incompatible"
+    ],
+    "fix_steps": [
+      "Check executable permissions: test -x $(which codex)",
+      "Run: codex --version",
+      "Reinstall Codex CLI if the wrapper cannot launch"
+    ],
+    "change_robust": "Detection depends on actual subprocess invocation, not cached state.",
+    "detection_method": "Run configured codex binary with --version and check returncode"
+  },
+  {
+    "check_id": "codex_exec_flag_support",
+    "category": "codex_contract",
+    "severity": "critical",
+    "what_it_checks": "codex exec advertises --output-last-message and --json for clean programmatic output capture",
+    "failure_symptom": "Adapter would have to scrape mixed stdout and could parse hook/token noise as the final message",
+    "likely_causes": [
+      "Codex CLI is too old",
+      "A wrapper named codex shadows the real CLI",
+      "Codex exec command contract changed"
+    ],
+    "fix_steps": [
+      "Run: codex exec --help",
+      "Upgrade Codex if --output-last-message or --json is missing",
+      "Check which codex resolves to the expected CLI"
+    ],
+    "change_robust": "Greps live exec --help output each run and detects CLI contract drift.",
+    "detection_method": "'codex exec', '--output-last-message', and '--json' present in `codex exec --help`"
+  },
+  {
     "check_id": "hermes_version",
     "category": "hermes_contract",
     "severity": "high",

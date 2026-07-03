@@ -12,7 +12,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from cluxion_effort_ultracode.adapters import CallableLlmAdapter, HermesExecutableNotFoundError
+from cluxion_effort_ultracode.adapters import (
+    CallableLlmAdapter,
+    CodexExecutableNotFoundError,
+    HermesExecutableNotFoundError,
+)
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
 from cluxion_effort_ultracode.core.consensus import (
     DEFAULT_AGENT_TIMEOUT_S,
@@ -124,10 +128,10 @@ def _build_parser() -> argparse.ArgumentParser:
     consensus.add_argument("--models", default=None, help="Comma-separated per-agent models, cycled across agents")
     consensus.add_argument(
         "--adapter",
-        choices=["hermes", "mock-unanimous", "mock-no-consensus"],
+        choices=["hermes", "codex", "mock-unanimous", "mock-no-consensus"],
         default=None,
         help=(
-            "LLM adapter: hermes runs real hermes -z via the plugin default path; "
+            "LLM adapter: hermes runs real hermes -z, codex runs codex exec; "
             "mock-* adapters are deterministic for local testing."
         ),
     )
@@ -151,7 +155,14 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
     try:
         config = _prepare_consensus(namespace)
         journal_info = {"run_id": config.journal.run_id, "journal_path": str(config.journal.path)}
-        adapter = LazyLlm(lambda: _resolve_adapter(config.adapter, agents=config.agents, rounds=config.rounds))
+        adapter = LazyLlm(
+            lambda: _resolve_adapter(
+                config.adapter,
+                agents=config.agents,
+                rounds=config.rounds,
+                timeout_seconds=config.agent_timeout,
+            )
+        )
         journaled = JournaledLlm(adapter, config.journal)
         engine = ConsensusEngine(
             journaled,
@@ -184,6 +195,23 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
                     "hint": (
                         "Ensure the hermes executable is on PATH, or configure "
                         "CLUXION_EFFORT_ULTRACODE_HERMES_BINARY."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1
+    except CodexExecutableNotFoundError as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "codex_not_found",
+                    "message": str(exc),
+                    **journal_info,
+                    "hint": (
+                        "Ensure the codex executable is on PATH, or configure "
+                        "CLUXION_EFFORT_ULTRACODE_CODEX_BINARY."
                     ),
                 },
                 ensure_ascii=False,
@@ -320,11 +348,17 @@ def _saved_models(saved: Mapping[str, object] | None) -> list[str] | None:
     return [str(model) for model in models] if isinstance(models, list) and models else None
 
 
-def _resolve_adapter(name: str, *, agents: int, rounds: int) -> CallableLlmAdapter | _ScriptedConsensusLlm:
-    if name == "hermes":
+def _resolve_adapter(
+    name: str,
+    *,
+    agents: int,
+    rounds: int,
+    timeout_seconds: float,
+) -> CallableLlmAdapter | _ScriptedConsensusLlm:
+    if name in {"hermes", "codex"}:
         from cluxion_effort_ultracode.llm_factory import default_llm
 
-        return default_llm()
+        return default_llm(name, timeout_seconds=timeout_seconds)
     return _mock_adapter(name, agents=agents, rounds=rounds)
 
 

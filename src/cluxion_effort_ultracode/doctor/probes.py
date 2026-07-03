@@ -29,6 +29,68 @@ def hermes_on_path(ctx: DoctorContext) -> tuple[str, str]:
     return "fail", "not found on PATH"
 
 
+def _codex_binary() -> str:
+    return os.getenv("CLUXION_EFFORT_ULTRACODE_CODEX_BINARY", "codex")
+
+
+@_register("codex_on_path")
+def codex_on_path(ctx: DoctorContext) -> tuple[str, str]:
+    p = ctx.which("codex")
+    if p:
+        return "pass", str(p)
+    return "fail", "not found on PATH"
+
+
+@_register("codex_binary_available")
+def codex_binary_available(ctx: DoctorContext) -> tuple[str, str]:
+    binary = _codex_binary()
+    p = ctx.which(binary)
+    if p:
+        return "pass", str(p)
+    return "skip", "codex binary not on PATH — cannot verify"
+
+
+@_register("codex_version")
+def codex_version(ctx: DoctorContext) -> tuple[str, str]:
+    try:
+        cp = ctx.run_cached([_codex_binary(), "--version"])
+        if cp.returncode == 0 and (cp.stdout.strip() or cp.stderr.strip()):
+            return "pass", cp.stdout.strip() or cp.stderr.strip()
+        return "fail", cp.stdout.strip() or cp.stderr.strip() or f"exit {cp.returncode}"
+    except Exception as e:
+        return "fail", f"run error: {e}"
+
+
+@_register("codex_subprocess_launchable")
+def codex_subprocess_launchable(ctx: DoctorContext) -> tuple[str, str]:
+    binary = _codex_binary()
+    if ctx.which(binary) is None:
+        return "skip", "codex binary not on PATH — cannot verify"
+    try:
+        cp = ctx.run_cached([binary, "--version"])
+        if cp.returncode == 0:
+            return "pass", cp.stdout.strip() or cp.stderr.strip() or "launched"
+        detail = cp.stdout.strip() or cp.stderr.strip() or f"exit {cp.returncode}"
+        return "fail", detail
+    except Exception as e:
+        return "fail", f"launch error: {e}"
+
+
+@_register("codex_exec_flag_support")
+def codex_exec_flag_support(ctx: DoctorContext) -> tuple[str, str]:
+    binary = _codex_binary()
+    if ctx.which(binary) is None:
+        return "skip", "codex binary not on PATH — cannot verify"
+    try:
+        cp = ctx.run_cached([binary, "exec", "--help"])
+        out = cp.stdout + cp.stderr
+        if "codex exec" in out and "--output-last-message" in out and "--json" in out:
+            return "pass", "present"
+        return "fail", "missing in exec --help"
+    except Exception as e:
+        return "fail", f"run error: {e}"
+
+
 @_register("hermes_binary_available")
 def hermes_binary_available(ctx: DoctorContext) -> tuple[str, str]:
     binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", ctx.hermes_bin)
@@ -194,8 +256,11 @@ def consensus_schema_contract(ctx: DoctorContext) -> tuple[str, str]:
             return "fail", f"anyOf={any_of!r}"
         if not isinstance(any_of, list) or {"required": ["resume"]} not in any_of:
             return "fail", f"anyOf={any_of!r}"
-        if not isinstance(properties, dict) or not {"question", "resume"} <= set(properties):
+        if not isinstance(properties, dict) or not {"question", "resume", "adapter"} <= set(properties):
             return "fail", "question/resume missing from properties"
+        adapter = properties.get("adapter")
+        if not isinstance(adapter, dict) or adapter.get("enum") != ["hermes", "codex"]:
+            return "fail", f"adapter={adapter!r}"
         return "pass", "schema contract ok"
     except Exception as e:
         return "fail", f"schema error: {e}"
@@ -211,7 +276,7 @@ def llm_factory_callable(ctx: DoctorContext) -> tuple[str, str]:
             def complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
                 return {"stance": "Yes", "rationale": "stub", "evidence": ["e"], "confidence": 0.9}
 
-        _call_llm_factory(lambda: _StubLlm())
+        _call_llm_factory(lambda: _StubLlm(), adapter="hermes", timeout_seconds=120)
         if not callable(default_llm):
             return "fail", "default_llm is not callable"
         llm = default_llm()
@@ -346,11 +411,16 @@ def hermes_subprocess_timeout_triggered(ctx: DoctorContext) -> tuple[str, str]:
 @_register("llm_port_complete_method_signature")
 def llm_port_complete_method_signature(ctx: DoctorContext) -> tuple[str, str]:
     try:
+        from cluxion_effort_ultracode.adapters.codex_llm import CodexSubprocessLlm
         from cluxion_effort_ultracode.adapters.hermes_llm import HermesSubprocessLlm
 
-        signature = inspect.signature(HermesSubprocessLlm.complete)
-        if {"schema", "model"} <= set(signature.parameters):
-            return "pass", str(signature)
-        return "fail", str(signature)
+        signatures = {
+            "hermes": inspect.signature(HermesSubprocessLlm.complete),
+            "codex": inspect.signature(CodexSubprocessLlm.complete),
+        }
+        for name, signature in signatures.items():
+            if {"schema", "model"} > set(signature.parameters):
+                return "fail", f"{name}: {signature}"
+        return "pass", "; ".join(f"{name}: {signature}" for name, signature in signatures.items())
     except Exception as e:
         return "fail", f"signature error: {e}"

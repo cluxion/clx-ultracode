@@ -67,7 +67,7 @@ def test_cross_cutting_checks_present():
         version="0.1.4",
     )
     statuses = {c.check_id: c.status for c in result.checks}
-    for key in ("hermes_on_path", "entry_point_registered", "toolset_valid"):
+    for key in ("hermes_on_path", "codex_on_path", "entry_point_registered", "toolset_valid"):
         assert key in statuses
         assert statuses[key] in ("pass", "warn", "fail", "skip")
 
@@ -103,6 +103,8 @@ def test_critical_skip_does_not_degrade_summary(monkeypatch):
     )
     # Exclude probes that FAIL (not skip) when hermes is absent; we test probe-level SKIP here.
     hermes_absent_fail_probes = {
+        "codex_on_path",
+        "codex_version",
         "hermes_on_path",
         "hermes_version",
         "hermes_oneshot_flag",
@@ -142,6 +144,11 @@ def test_hermes_static_critical_probes_registered():
         assert name in PROBES
 
 
+def test_codex_static_critical_probes_registered():
+    for name in ("codex_binary_available", "codex_subprocess_launchable", "codex_exec_flag_support"):
+        assert name in PROBES
+
+
 def test_hermes_z_flag_support_parses_help(monkeypatch):
     monkeypatch.setattr(
         "cluxion_effort_ultracode.doctor.framework.shutil.which",
@@ -162,12 +169,42 @@ def test_hermes_z_flag_support_parses_help(monkeypatch):
     assert detail == "present"
 
 
+def test_codex_exec_flag_support_parses_help(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.framework.shutil.which",
+        lambda _: "/usr/local/bin/codex",
+    )
+
+    def _help_run(cmd):
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="Usage: codex exec [OPTIONS] [PROMPT]\n      --output-last-message <FILE>\n      --json",
+            stderr="",
+        )
+
+    ctx = DoctorContext(Path.cwd(), "hermes", _help_run)
+    status, detail = PROBES["codex_exec_flag_support"](ctx)
+    assert status == "pass"
+    assert detail == "present"
+
+
 def test_hermes_z_flag_support_skips_when_absent(monkeypatch):
     monkeypatch.setattr(
         "cluxion_effort_ultracode.doctor.framework.shutil.which",
         lambda _: None,
     )
     status, detail = PROBES["hermes_z_flag_support"](_doctor_ctx())
+    assert status == "skip"
+    assert "cannot verify" in detail
+
+
+def test_codex_exec_flag_support_skips_when_absent(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.framework.shutil.which",
+        lambda _: None,
+    )
+    status, detail = PROBES["codex_exec_flag_support"](_doctor_ctx())
     assert status == "skip"
     assert "cannot verify" in detail
 
@@ -180,6 +217,7 @@ def test_static_probes_do_not_skip(monkeypatch):
     ctx = _doctor_ctx()
     static_probes = (
         "consensus_schema_contract",
+        "codex_binary_available",
         "hermes_binary_available",
         "hermes_timeout_configured",
         "llm_factory_callable",
@@ -212,6 +250,16 @@ def test_hermes_timeout_configured_rejects_invalid(monkeypatch):
     assert "non-numeric" in detail
 
 
+def test_codex_binary_available_passes_when_present(monkeypatch):
+    monkeypatch.setattr(
+        "cluxion_effort_ultracode.doctor.framework.shutil.which",
+        lambda _: "/usr/local/bin/codex",
+    )
+    status, detail = PROBES["codex_binary_available"](_doctor_ctx())
+    assert status == "pass"
+    assert detail == "/usr/local/bin/codex"
+
+
 def test_debate_non_termination_cost_mentions_token_ceiling():
     status, detail = PROBES["debate_non_termination_cost"](_doctor_ctx())
     assert status == "pass"
@@ -224,6 +272,15 @@ def test_dead_probes_removed():
 
 
 def _mock_healthy_hermes_run(cmd):
+    if cmd[0] == "codex" and "--version" in cmd:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="codex 1.2.3", stderr="")
+    if cmd[0] == "codex" and "--help" in cmd:
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="Usage: codex exec [OPTIONS] [PROMPT]\n      --output-last-message <FILE>\n      --json",
+            stderr="",
+        )
     if "--version" in cmd:
         return subprocess.CompletedProcess(
             args=cmd,
@@ -271,10 +328,14 @@ def test_doctor_run_memoizes_duplicate_commands(monkeypatch):
     assert statuses["hermes_oneshot_flag"] == "pass"
     assert statuses["hermes_z_flag_support"] == "pass"
 
-    version_calls = [cmd for cmd in invocations if cmd[-1] == "--version"]
-    help_calls = [cmd for cmd in invocations if cmd[-1] == "--help"]
-    assert len(version_calls) == 1
-    assert len(help_calls) == 1
+    hermes_version_calls = [cmd for cmd in invocations if cmd[0] == "hermes" and cmd[-1] == "--version"]
+    codex_version_calls = [cmd for cmd in invocations if cmd[0] == "codex" and cmd[-1] == "--version"]
+    hermes_help_calls = [cmd for cmd in invocations if cmd[0] == "hermes" and cmd[-1] == "--help"]
+    codex_help_calls = [cmd for cmd in invocations if cmd[0] == "codex" and cmd[-1] == "--help"]
+    assert len(hermes_version_calls) == 1
+    assert len(codex_version_calls) == 1
+    assert len(hermes_help_calls) == 1
+    assert len(codex_help_calls) == 1
 
 
 def test_doctor_warm_run_under_400ms(monkeypatch):
@@ -328,6 +389,8 @@ def test_hermes_subprocess_launchable_doctor_invariants(monkeypatch):
         lambda _: None,
     )
     hermes_absent_fail_probes = {
+        "codex_on_path",
+        "codex_version",
         "hermes_on_path",
         "hermes_version",
         "hermes_oneshot_flag",

@@ -13,12 +13,19 @@ Call the package CLI. The host agent owns model calls, shell execution, and fina
 cluxion-ultracode consensus --question "<decision or proposal>" --context "<optional context>"
 ```
 
+On Codex hosts, prefer the first-class Codex adapter:
+
+```bash
+cluxion-ultracode consensus --question "<decision or proposal>" --adapter codex
+```
+
 Useful options:
 
 ```bash
 cluxion-ultracode consensus --question "<decision>" --rounds 3 --agents 3
 cluxion-ultracode consensus --question "<decision>" --agent-timeout 180 --debate-budget 600
 cluxion-ultracode consensus --question "<decision>" --budget-tokens 120000 --models cheap,strong,cheap
+cluxion-ultracode consensus --question "<decision>" --adapter hermes
 cluxion-ultracode consensus --question-file <path>
 cat <path> | cluxion-ultracode consensus --question -
 cluxion-ultracode consensus --question "<decision>" --adapter mock-unanimous
@@ -26,7 +33,7 @@ cluxion-ultracode consensus --resume <run_id>
 ```
 
 Worst-case cost: `agents * (rounds + 1)` model calls plus `tokens_spent`. Token usage is real when
-Hermes reports usage, otherwise `estimated: true` via chars/4. Every result includes `run_id` and
+the backend reports usage, otherwise `estimated: true` via chars/4. Every result includes `run_id` and
 `journal_path`; resume replays matching calls into `tokens_replayed` and only live suffix calls
 consume `tokens_spent`/`--budget-tokens`. Completed journals can be replayed for deterministic
 debugging.

@@ -8,7 +8,7 @@
     {
       "name": "cluxion-agentplugin-effort-ultracode",
       "description": "Multi-agent consensus effort harness with hard agent/round caps.",
-      "version": "0.1.14",
+      "version": "0.1.15",
       "source": "./"
     }
   ]

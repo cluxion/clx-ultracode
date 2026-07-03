@@ -46,7 +46,7 @@ def test_structured_complete_parses_json_from_subprocess_stdout() -> None:
     llm = HermesSubprocessLlm(timeout_seconds=12)
 
     with patch(
-        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+        "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
         return_value=FakeProcess('```json\n{"stance":"Adopt"}\n```'),
     ) as popen:
         result = llm.complete("Prompt", schema={"type": "object"})
@@ -64,7 +64,7 @@ def test_default_model_is_passed_to_hermes_oneshot() -> None:
     llm = HermesSubprocessLlm(binary="/opt/hermes", timeout_seconds=5, model="grok-test")
 
     with patch(
-        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+        "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
         return_value=FakeProcess("raw text"),
     ) as popen:
         assert llm.complete("Prompt") == "raw text"
@@ -76,7 +76,7 @@ def test_per_call_model_override_reaches_hermes_m_flag() -> None:
     llm = HermesSubprocessLlm(binary="/opt/hermes", timeout_seconds=5, model="default-model")
 
     with patch(
-        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+        "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
         return_value=FakeProcess("raw text"),
     ) as popen:
         assert llm.complete("Prompt", model="seat-model") == "raw text"
@@ -88,7 +88,7 @@ def test_hermes_usage_is_feature_detected_from_stderr_json() -> None:
     llm = HermesSubprocessLlm()
 
     with patch(
-        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+        "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
         return_value=FakeProcess("raw text", stderr='{"usage":{"input_tokens":7,"output_tokens":5}}'),
     ):
         assert llm.complete("Prompt") == "raw text"
@@ -100,7 +100,7 @@ def test_structured_complete_retries_once_after_malformed_json() -> None:
     llm = HermesSubprocessLlm()
 
     with patch(
-        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+        "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
         side_effect=[FakeProcess("not json"), FakeProcess('{"stance":"Adopt"}')],
     ) as popen:
         result = llm.complete("Prompt", schema={"type": "object"})
@@ -115,7 +115,7 @@ def test_structured_complete_logs_first_parse_failure(capsys) -> None:
     llm = HermesSubprocessLlm()
 
     with patch(
-        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+        "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
         side_effect=[FakeProcess("not json"), FakeProcess('{"stance":"Adopt"}')],
     ):
         assert llm.complete("Prompt", schema={"type": "object"}) == {"stance": "Adopt"}
@@ -128,10 +128,10 @@ def test_transient_subprocess_error_retries_once() -> None:
 
     with (
         patch(
-            "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+            "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
             side_effect=[TimeoutThenExitProcess(), FakeProcess("raw text")],
         ) as popen,
-        patch("cluxion_effort_ultracode.adapters.hermes_llm.os.killpg", lambda pid, sig: None),
+        patch("cluxion_effort_ultracode.adapters.subprocess_common.os.killpg", lambda pid, sig: None),
     ):
         assert llm.complete("Prompt") == "raw text"
 
@@ -142,7 +142,7 @@ def test_structured_complete_treats_empty_code_fence_as_retryable_parse_failure(
     llm = HermesSubprocessLlm()
 
     with patch(
-        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+        "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
         side_effect=[FakeProcess("```\n```"), FakeProcess('{"stance":"Adopt"}')],
     ) as popen:
         result = llm.complete("Prompt", schema={"type": "object"})
@@ -156,7 +156,7 @@ def test_missing_hermes_binary_raises_honest_error() -> None:
 
     with (
         patch(
-            "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.Popen",
+            "cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen",
             side_effect=FileNotFoundError,
         ),
         pytest.raises(HermesExecutableNotFoundError, match="missing-hermes"),

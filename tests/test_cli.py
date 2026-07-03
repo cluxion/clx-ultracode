@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from cluxion_effort_ultracode.adapters.codex_llm import CodexExecutableNotFoundError
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError
 from cluxion_effort_ultracode.cli import main
 from cluxion_effort_ultracode.core.journal import journals_dir
@@ -95,6 +96,54 @@ def test_consensus_cli_hermes_missing_returns_json_error(capsys):
     assert payload["ok"] is False
     assert payload["error"] == "hermes_not_found"
     assert "PATH" in payload["hint"]
+
+
+def test_consensus_cli_codex_adapter_uses_default_llm_factory():
+    class _StubLlm:
+        def __init__(self) -> None:
+            self.outputs = [
+                {"stance": "Yes", "rationale": "r1", "evidence": ["e1"], "confidence": 0.9},
+                {"stance": "YES.", "rationale": "r2", "evidence": ["e2"], "confidence": 0.8},
+            ]
+            self.index = 0
+
+        def complete(self, prompt: str, *, schema=None, model=None):
+            del prompt, schema, model
+            output = self.outputs[self.index]
+            self.index += 1
+            return output
+
+    with patch("cluxion_effort_ultracode.llm_factory.default_llm", return_value=_StubLlm()) as default_llm:
+        exit_code = main(
+            [
+                "consensus",
+                "--question",
+                "Adopt?",
+                "--adapter",
+                "codex",
+                "--agents",
+                "2",
+                "--rounds",
+                "0",
+            ]
+        )
+    assert exit_code == 0
+    default_llm.assert_called_once_with("codex", timeout_seconds=180.0)
+
+
+def test_consensus_cli_codex_missing_returns_json_error(capsys):
+    with patch(
+        "cluxion_effort_ultracode.llm_factory.default_llm",
+        side_effect=CodexExecutableNotFoundError("Codex executable not found: 'missing-codex'"),
+    ):
+        exit_code = main(["consensus", "--question", "Adopt?", "--adapter", "codex"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "codex_not_found"
+    assert "PATH" in payload["hint"]
+    assert "CLUXION_EFFORT_ULTRACODE_CODEX_BINARY" in payload["hint"]
 
 
 def test_consensus_cli_exposes_timeout_and_budget_flags(capsys):
@@ -247,6 +296,21 @@ def test_consensus_cli_resume_mismatch_is_structured(capsys):
     assert "question" in payload["fields"]
 
 
+def test_consensus_cli_resume_mismatch_on_adapter_change(capsys):
+    assert (
+        main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
+        == 0
+    )
+    run_id = json.loads(capsys.readouterr().out)["run_id"]
+
+    exit_code = main(["consensus", "--resume", run_id, "--adapter", "mock-no-consensus"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["error"] == "resume_mismatch"
+    assert payload["fields"]["adapter"] == {"journal": "mock-unanimous", "current": "mock-no-consensus"}
+
+
 def test_consensus_cli_resume_completed_run_replays_without_question(capsys):
     assert (
         main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
@@ -298,6 +362,7 @@ def test_consensus_help_documents_cost_formula(capsys):
     assert "--budget-tokens" in out
     assert "--models" in out
     assert "--question-file" in out
+    assert "codex" in out
 
 
 @pytest.mark.skipif(

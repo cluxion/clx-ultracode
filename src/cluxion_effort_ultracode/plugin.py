@@ -9,7 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError, HermesSubprocessLlm
+from cluxion_effort_ultracode.adapters.codex_llm import CodexExecutableNotFoundError
+from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
 from cluxion_effort_ultracode.core.consensus import (
     DEFAULT_AGENT_TIMEOUT_S,
@@ -41,13 +42,14 @@ CONSENSUS_ARG_KEYS = {
     "debate_budget",
     "budget_tokens",
     "models",
+    "adapter",
 }
 
 CONSENSUS_SCHEMA: dict[str, Any] = {
     "name": "cluxion_consensus",
     "description": (
-        "Run an opt-in deep-deliberation consensus debate through Hermes oneshot. "
-        "Worst-case cost is agents * (rounds + 1) hermes -z model calls, plus tracked tokens."
+        "Run an opt-in deep-deliberation consensus debate through Hermes or Codex. "
+        "Worst-case cost is agents * (rounds + 1) model calls, plus tracked tokens."
     ),
     "parameters": {
         "type": "object",
@@ -101,6 +103,12 @@ CONSENSUS_SCHEMA: dict[str, Any] = {
                 "description": "Optional per-agent model list, cycled across agent seats.",
                 "items": {"type": "string"},
                 "default": [],
+            },
+            "adapter": {
+                "type": "string",
+                "description": "Real LLM adapter. Hermes remains the default; Codex is recommended on Codex hosts.",
+                "enum": ["hermes", "codex"],
+                "default": "hermes",
             },
         },
         "anyOf": [{"required": ["question"]}, {"required": ["resume"]}],
@@ -206,6 +214,7 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
         )
         budget_tokens = _optional_int_arg(args, "budget_tokens", default=(saved or {}).get("budget_tokens"))
         models = _models_arg(args, "models") if "models" in args else _saved_models(saved)
+        adapter = _adapter_arg(args, saved)
         run_id = resume or new_run_id()
         header = build_header(
             run_id=run_id,
@@ -214,13 +223,16 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             agents_count=agents,
             max_rounds=rounds,
             models=models or [],
-            adapter="plugin",
+            adapter=adapter,
             agent_timeout_s=agent_timeout,
             debate_budget_s=debate_budget,
             budget_tokens=budget_tokens,
         )
         journal = DebateJournal.resume(run_id, header) if resume else DebateJournal.start(header)
-        llm = JournaledLlm(LazyLlm(lambda: _call_llm_factory(llm_factory)), journal)
+        llm = JournaledLlm(
+            LazyLlm(lambda: _call_llm_factory(llm_factory, adapter=adapter, timeout_seconds=agent_timeout)),
+            journal,
+        )
         result = ConsensusEngine(
             llm,
             agents_count=agents,
@@ -242,19 +254,26 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             "message": str(exc),
             "hint": ("Ensure the hermes executable is on PATH, or configure CLUXION_EFFORT_ULTRACODE_HERMES_BINARY."),
         }
+    except CodexExecutableNotFoundError as exc:
+        return {
+            "ok": False,
+            "error": "codex_not_found",
+            "message": str(exc),
+            "hint": ("Ensure the codex executable is on PATH, or configure CLUXION_EFFORT_ULTRACODE_CODEX_BINARY."),
+        }
     except (ConsensusProtocolError, ValueError) as exc:
         return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
     return {"ok": True, "result": asdict(result)}
 
 
-def _default_llm() -> HermesSubprocessLlm:
-    return default_llm()
+def _default_llm(adapter: str = "hermes", *, timeout_seconds: float | None = None) -> LlmPort:
+    return default_llm(adapter, timeout_seconds=timeout_seconds)
 
 
-def _call_llm_factory(llm_factory: object) -> LlmPort:
+def _call_llm_factory(llm_factory: object, *, adapter: str, timeout_seconds: float) -> LlmPort:
     if not callable(llm_factory):
         raise ValueError("llm_factory must be callable")
-    llm = llm_factory()
+    llm = llm_factory(adapter, timeout_seconds=timeout_seconds) if llm_factory is _default_llm else llm_factory()
     complete = getattr(llm, "complete", None)
     if not callable(complete):
         raise ValueError("llm_factory must return an object with complete(...)")
@@ -336,6 +355,13 @@ def _models_arg(args: Mapping[str, object], key: str) -> list[str] | None:
     if any(not model for model in models):
         raise ValueError("models entries must be non-empty")
     return models or None
+
+
+def _adapter_arg(args: Mapping[str, object], saved: Mapping[str, object] | None) -> str:
+    adapter = _text_arg(args, "adapter", default=str((saved or {}).get("adapter", "hermes")))
+    if adapter not in {"hermes", "codex"}:
+        raise ValueError("adapter must be one of: hermes, codex")
+    return adapter
 
 
 def _saved_models(saved: Mapping[str, object] | None) -> list[str] | None:
