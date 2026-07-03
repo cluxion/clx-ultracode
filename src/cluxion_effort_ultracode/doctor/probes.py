@@ -188,12 +188,14 @@ def consensus_schema_contract(ctx: DoctorContext) -> tuple[str, str]:
         parameters = schema.get("parameters")
         if not isinstance(parameters, dict):
             return "fail", "parameters not a dict"
-        required = parameters.get("required")
+        any_of = parameters.get("anyOf")
         properties = parameters.get("properties")
-        if not isinstance(required, list) or "question" not in required:
-            return "fail", f"required={required!r}"
-        if not isinstance(properties, dict) or "question" not in properties:
-            return "fail", "question missing from properties"
+        if not isinstance(any_of, list) or {"required": ["question"]} not in any_of:
+            return "fail", f"anyOf={any_of!r}"
+        if not isinstance(any_of, list) or {"required": ["resume"]} not in any_of:
+            return "fail", f"anyOf={any_of!r}"
+        if not isinstance(properties, dict) or not {"question", "resume"} <= set(properties):
+            return "fail", "question/resume missing from properties"
         return "pass", "schema contract ok"
     except Exception as e:
         return "fail", f"schema error: {e}"

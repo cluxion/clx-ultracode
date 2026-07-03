@@ -191,18 +191,18 @@ def test_static_probes_do_not_skip(monkeypatch):
         assert status != "skip", f"{name} should not skip"
 
 
-def test_consensus_schema_contract_detects_missing_question(monkeypatch):
+def test_consensus_schema_contract_detects_missing_question_route(monkeypatch):
     from cluxion_effort_ultracode import plugin
 
     broken = dict(plugin.CONSENSUS_SCHEMA)
     params = dict(broken["parameters"])
-    params["required"] = []
+    params["anyOf"] = [{"required": ["resume"]}]
     broken["parameters"] = params
     monkeypatch.setattr(plugin, "CONSENSUS_SCHEMA", broken)
 
     status, detail = PROBES["consensus_schema_contract"](_doctor_ctx())
     assert status == "fail"
-    assert "required" in detail
+    assert "anyOf" in detail
 
 
 def test_hermes_timeout_configured_rejects_invalid(monkeypatch):

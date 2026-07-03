@@ -12,8 +12,14 @@ Useful flags:
 
 ```bash
 cluxion-ultracode consensus --question "$ARGUMENTS" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600 --budget-tokens 120000 --models cheap,strong,cheap
+cluxion-ultracode consensus --resume <run_id>
+cluxion-ultracode journals list
+cluxion-ultracode journals show <run_id>
+cluxion-ultracode journals gc --older-than-days 7 --apply
 ```
 
 Worst-case cost: `agents * (rounds + 1)` model calls plus `tokens_spent`. Token usage is real when
 Hermes reports usage, otherwise `estimated: true` via chars/4. Budget/quorum aborts return JSON
-with `status: "aborted"` and a partial transcript.
+with `status: "aborted"` and a partial transcript. Every result includes `run_id` and `journal_path`;
+resume replays matching recorded calls into `tokens_replayed` and only live suffix calls consume
+`tokens_spent`/`--budget-tokens`. Completed journals can be replayed for deterministic debugging.

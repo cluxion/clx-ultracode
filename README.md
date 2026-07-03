@@ -86,7 +86,7 @@ cluxion-ultracode doctor --json   # 구조화 출력
 
 Hermes 안에서는 `ultracode_doctor` 도구로도 노출됩니다.
 
-## 슬래시 커맨드 (0.1.13)
+## 슬래시 커맨드 (0.1.14)
 
 Codex/Claude Code 플러그인 명령:
 
@@ -196,7 +196,7 @@ cluxion-ultracode doctor --json   # structured output
 
 Also exposed inside Hermes as the `ultracode_doctor` tool.
 
-## Slash commands (0.1.13)
+## Slash commands (0.1.14)
 
 Codex/Claude Code plugin commands:
 

@@ -12,7 +12,7 @@ from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoun
 from cluxion_effort_ultracode.cli import main
 
 
-def test_consensus_mock_unanimous_adapter():
+def test_consensus_mock_unanimous_adapter(capsys):
     exit_code = main(
         [
             "consensus",
@@ -26,7 +26,10 @@ def test_consensus_mock_unanimous_adapter():
             "1",
         ]
     )
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
+    assert payload["run_id"]
+    assert payload["journal_path"].endswith(f"{payload['run_id']}.jsonl")
 
 
 def test_consensus_hermes_adapter_uses_default_llm_factory():
@@ -135,6 +138,65 @@ def test_consensus_cli_rejects_empty_model_entries(capsys):
     assert payload["ok"] is False
     assert payload["error"] == "ValueError"
     assert "models entries" in payload["message"]
+
+
+def test_consensus_cli_resume_mismatch_is_structured(capsys):
+    assert (
+        main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
+        == 0
+    )
+    run_id = json.loads(capsys.readouterr().out)["run_id"]
+
+    exit_code = main(
+        [
+            "consensus",
+            "--resume",
+            run_id,
+            "--question",
+            "Different?",
+            "--adapter",
+            "mock-unanimous",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["error"] == "resume_mismatch"
+    assert "question" in payload["fields"]
+
+
+def test_consensus_cli_resume_completed_run_replays_without_question(capsys):
+    assert (
+        main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
+        == 0
+    )
+    first = json.loads(capsys.readouterr().out)
+
+    assert main(["consensus", "--resume", first["run_id"]]) == 0
+    replayed = json.loads(capsys.readouterr().out)
+
+    assert replayed["status"] == first["status"]
+    assert replayed["decision"] == first["decision"]
+    assert replayed["tokens_spent"] == 0
+    assert replayed["tokens_replayed"] == first["tokens_spent"]
+
+
+def test_journals_list_and_show(capsys):
+    assert (
+        main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
+        == 0
+    )
+    run_id = json.loads(capsys.readouterr().out)["run_id"]
+
+    assert main(["journals", "list"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert listed["journals"][0]["run_id"] == run_id
+    assert listed["journals"][0]["calls_recorded"] == 2
+
+    assert main(["journals", "show", run_id]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["records"][0]["type"] == "header"
+    assert shown["records"][1]["type"] == "call"
 
 
 def test_doctor_json_output_is_stdout_pure(capsys):

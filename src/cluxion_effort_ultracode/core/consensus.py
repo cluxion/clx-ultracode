@@ -250,7 +250,7 @@ class ConsensusEngine:
         debate continues while at least MIN_QUORUM positions survive.
         Worker count is capped to leave CPU headroom under high fan-out.
         """
-        if hasattr(self.llm, "outputs"):
+        if hasattr(self.llm, "outputs") or getattr(self.llm, "serial_complete", False):
             return [run_agent(index, prior) for index, prior in tasks]
 
         results: dict[int, AgentPosition] = {}
@@ -348,7 +348,10 @@ class ConsensusEngine:
             evidence_trail=evidence,
             rounds_completed=rounds,
             tokens_spent=self._tokens_spent,
+            tokens_replayed=self._tokens_replayed(),
             tokens_estimated=self._tokens_estimated,
+            run_id=self._run_id(),
+            journal_path=self._journal_path(),
         )
 
     def _no_consensus_result(
@@ -397,7 +400,10 @@ class ConsensusEngine:
             majority_stance=majority,
             rounds_completed=rounds,
             tokens_spent=self._tokens_spent,
+            tokens_replayed=self._tokens_replayed(),
             tokens_estimated=self._tokens_estimated,
+            run_id=self._run_id(),
+            journal_path=self._journal_path(),
         )
 
     def _aborted_result(
@@ -428,12 +434,26 @@ class ConsensusEngine:
             abort_reason=reason,
             rounds_completed=rounds_completed,
             tokens_spent=self._tokens_spent,
+            tokens_replayed=self._tokens_replayed(),
             tokens_estimated=self._tokens_estimated,
+            run_id=self._run_id(),
+            journal_path=self._journal_path(),
         )
 
     def _emit_progress(self, round_index: int, phase: str) -> None:
         if self.progress_callback is not None:
             self.progress_callback(round_index, phase)
+
+    def _tokens_replayed(self) -> int:
+        return int(getattr(self.llm, "tokens_replayed", 0) or 0)
+
+    def _run_id(self) -> str | None:
+        value = getattr(self.llm, "run_id", None)
+        return str(value) if value is not None else None
+
+    def _journal_path(self) -> str | None:
+        value = getattr(self.llm, "journal_path", None)
+        return str(value) if value is not None else None
 
     def _build_initial_prompt(self, question: str, context: str, agent_id: str) -> str:
         return (

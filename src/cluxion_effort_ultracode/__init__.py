@@ -7,6 +7,6 @@ from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusResult
 try:
     __version__ = version("cluxion-agentplugin-effort-ultracode")
 except PackageNotFoundError:  # pragma: no cover
-    __version__ = "0.1.13"
+    __version__ = "0.1.14"
 
 __all__ = ["ConsensusEngine", "ConsensusResult"]

@@ -72,6 +72,18 @@ class MissingHermesLlm:
         raise HermesExecutableNotFoundError("Hermes executable not found: 'hermes'")
 
 
+class NoCallLlm:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: Mapping[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Mapping[str, Any]:
+        del prompt, schema, model
+        raise AssertionError("backend should not be called")
+
+
 def position(stance: str) -> dict[str, Any]:
     return {
         "stance": stance,
@@ -98,8 +110,10 @@ def test_register_uses_real_hermes_tool_contract() -> None:
     assert isinstance(schema["description"], str)
     assert "agents * (rounds + 1)" in schema["description"]
     assert schema["parameters"]["type"] == "object"
-    assert schema["parameters"]["required"] == ["question"]
+    assert {"required": ["question"]} in schema["parameters"]["anyOf"]
+    assert {"required": ["resume"]} in schema["parameters"]["anyOf"]
     assert "question" in schema["parameters"]["properties"]
+    assert "resume" in schema["parameters"]["properties"]
     assert "budget_tokens" in schema["parameters"]["properties"]
     assert "models" in schema["parameters"]["properties"]
 
@@ -119,7 +133,20 @@ def test_consensus_handler_returns_json_string_with_scripted_llm() -> None:
     assert payload["ok"] is True
     assert payload["result"]["status"] == "unanimous"
     assert payload["result"]["decision"] == "yes"
+    assert payload["result"]["run_id"]
+    assert payload["result"]["journal_path"]
     assert len(llm.calls) == 2
+
+
+def test_consensus_handler_can_resume_completed_journal_without_question() -> None:
+    llm = ScriptedLlm([position("yes"), position("YES.")])
+    first = json.loads(plugin.build_consensus_handler(lambda: llm)({"question": "Should we answer yes?", "rounds": 0, "agents": 2}))
+    replayed = json.loads(plugin.build_consensus_handler(lambda: NoCallLlm())({"resume": first["result"]["run_id"]}))
+
+    assert replayed["ok"] is True
+    assert replayed["result"]["status"] == first["result"]["status"]
+    assert replayed["result"]["tokens_spent"] == 0
+    assert replayed["result"]["tokens_replayed"] == first["result"]["tokens_spent"]
 
 
 def test_consensus_handler_routes_models_and_rejects_empty_entries() -> None:

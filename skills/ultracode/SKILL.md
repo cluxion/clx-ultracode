@@ -20,10 +20,23 @@ cluxion-ultracode consensus --question "<decision>" --rounds 3 --agents 3
 cluxion-ultracode consensus --question "<decision>" --agent-timeout 180 --debate-budget 600
 cluxion-ultracode consensus --question "<decision>" --budget-tokens 120000 --models cheap,strong,cheap
 cluxion-ultracode consensus --question "<decision>" --adapter mock-unanimous
+cluxion-ultracode consensus --resume <run_id>
 ```
 
 Worst-case cost: `agents * (rounds + 1)` model calls plus `tokens_spent`. Token usage is real when
-Hermes reports usage, otherwise `estimated: true` via chars/4.
+Hermes reports usage, otherwise `estimated: true` via chars/4. Every result includes `run_id` and
+`journal_path`; resume replays matching calls into `tokens_replayed` and only live suffix calls
+consume `tokens_spent`/`--budget-tokens`. Completed journals can be replayed for deterministic
+debugging.
+
+## Journals
+
+```bash
+cluxion-ultracode journals list
+cluxion-ultracode journals show <run_id>
+cluxion-ultracode journals gc --older-than-days 7
+cluxion-ultracode journals gc --older-than-days 7 --apply
+```
 
 Rules:
 
@@ -33,7 +46,8 @@ Rules:
 4. If `status` is `aborted`, report `abort_reason`, `rounds_completed`, and the partial transcript.
 5. Treat `abort_reason: "token_budget_exceeded"` as an honest budget stop, not a failed consensus.
 6. Do not raise `--rounds` or `--agents` past the CLI hard caps.
-7. Never claim checks were run unless the host actually ran them.
+7. On resume errors, report `resume_mismatch` fields instead of mixing runs.
+8. Never claim checks were run unless the host actually ran them.
 
 ## Doctor
 

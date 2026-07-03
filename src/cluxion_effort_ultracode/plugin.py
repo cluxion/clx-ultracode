@@ -17,12 +17,23 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
+from cluxion_effort_ultracode.core.journal import (
+    DebateJournal,
+    JournaledLlm,
+    LazyLlm,
+    ResumeMismatch,
+    ResumeNotFound,
+    build_header,
+    journal_header,
+    new_run_id,
+)
 from cluxion_effort_ultracode.core.ports import LlmPort
 from cluxion_effort_ultracode.doctor import render_json, run_doctor
 from cluxion_effort_ultracode.llm_factory import default_llm
 
 CONSENSUS_ARG_KEYS = {
     "question",
+    "resume",
     "context",
     "rounds",
     "agents",
@@ -44,6 +55,10 @@ CONSENSUS_SCHEMA: dict[str, Any] = {
             "question": {
                 "type": "string",
                 "description": "Decision, proposal, or question that the agents must settle.",
+            },
+            "resume": {
+                "type": "string",
+                "description": "Existing journal run_id to replay or continue.",
             },
             "context": {
                 "type": "string",
@@ -88,7 +103,8 @@ CONSENSUS_SCHEMA: dict[str, Any] = {
                 "default": [],
             },
         },
-        "required": ["question"],
+        "anyOf": [{"required": ["question"]}, {"required": ["resume"]}],
+        "required": [],
         "additionalProperties": False,
     },
 }
@@ -132,8 +148,9 @@ def register(ctx: object) -> None:
         def _slash_cluxion_consensus(raw_args: str) -> str:
             question = raw_args.strip()
             if not question:
-                return "Usage: /cluxion-consensus <question>"
-            payload = _handle_consensus({"question": question}, llm_factory=_default_llm)
+                return "Usage: /cluxion-consensus <question|--resume run_id>"
+            args = {"resume": question.split(maxsplit=1)[1]} if question.startswith("--resume ") else {"question": question}
+            payload = _handle_consensus(args, llm_factory=_default_llm)
             return json.dumps(payload, ensure_ascii=False, indent=2)
 
         def _slash_ultracode_doctor(raw_args: str) -> str:
@@ -169,15 +186,41 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
 
     try:
         _reject_unknown_args(args)
-        question = _text_arg(args, "question", required=True)
-        context = _text_arg(args, "context", default="")
-        rounds = _int_arg(args, "rounds", default=3)
-        agents = _int_arg(args, "agents", default=3)
-        agent_timeout = _float_arg(args, "agent_timeout", default=DEFAULT_AGENT_TIMEOUT_S)
-        debate_budget = _float_arg(args, "debate_budget", default=DEFAULT_DEBATE_BUDGET_S)
-        budget_tokens = _optional_int_arg(args, "budget_tokens")
-        models = _models_arg(args, "models")
-        llm = _call_llm_factory(llm_factory)
+        resume = _text_arg(args, "resume", default="")
+        saved = journal_header(resume) if resume else None
+        question = _text_arg(args, "question", default=str((saved or {}).get("question", "")))
+        if not question:
+            raise ValueError("question is required unless resume points to a journal")
+        context = _text_arg(args, "context", default=str((saved or {}).get("context", "")))
+        rounds = _int_arg(args, "rounds", default=int((saved or {}).get("max_rounds", 3)))
+        agents = _int_arg(args, "agents", default=int((saved or {}).get("agents_count", 3)))
+        agent_timeout = _float_arg(
+            args,
+            "agent_timeout",
+            default=float((saved or {}).get("agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S)),
+        )
+        debate_budget = _float_arg(
+            args,
+            "debate_budget",
+            default=float((saved or {}).get("debate_budget_s", DEFAULT_DEBATE_BUDGET_S)),
+        )
+        budget_tokens = _optional_int_arg(args, "budget_tokens", default=(saved or {}).get("budget_tokens"))
+        models = _models_arg(args, "models") if "models" in args else _saved_models(saved)
+        run_id = resume or new_run_id()
+        header = build_header(
+            run_id=run_id,
+            question=question,
+            context=context,
+            agents_count=agents,
+            max_rounds=rounds,
+            models=models or [],
+            adapter="plugin",
+            agent_timeout_s=agent_timeout,
+            debate_budget_s=debate_budget,
+            budget_tokens=budget_tokens,
+        )
+        journal = DebateJournal.resume(run_id, header) if resume else DebateJournal.start(header)
+        llm = JournaledLlm(LazyLlm(lambda: _call_llm_factory(llm_factory)), journal)
         result = ConsensusEngine(
             llm,
             agents_count=agents,
@@ -187,6 +230,11 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             budget_tokens=budget_tokens,
             models=models,
         ).decide(question, context=context)
+        journal.append_result(result)
+    except ResumeMismatch as exc:
+        return {"ok": False, "error": "resume_mismatch", "fields": exc.fields}
+    except ResumeNotFound as exc:
+        return {"ok": False, "error": "resume_not_found", "run_id": str(exc)}
     except HermesExecutableNotFoundError as exc:
         return {
             "ok": False,
@@ -259,10 +307,10 @@ def _float_arg(args: Mapping[str, object], key: str, *, default: float) -> float
         raise ValueError(f"{key} must be numeric") from exc
 
 
-def _optional_int_arg(args: Mapping[str, object], key: str) -> int | None:
-    if key not in args or args[key] is None:
+def _optional_int_arg(args: Mapping[str, object], key: str, *, default: object = None) -> int | None:
+    value = default if key not in args or args[key] is None else args[key]
+    if value is None:
         return None
-    value = args[key]
     if isinstance(value, bool):
         raise ValueError(f"{key} must be an integer")
     try:
@@ -288,6 +336,13 @@ def _models_arg(args: Mapping[str, object], key: str) -> list[str] | None:
     if any(not model for model in models):
         raise ValueError("models entries must be non-empty")
     return models or None
+
+
+def _saved_models(saved: Mapping[str, object] | None) -> list[str] | None:
+    if saved is None:
+        return None
+    models = saved.get("models", [])
+    return [str(model) for model in models] if isinstance(models, list) and models else None
 
 
 def _handle_doctor(args: dict[str, object], **_: object) -> str:

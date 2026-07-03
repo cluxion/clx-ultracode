@@ -79,4 +79,7 @@ class ConsensusResult:
     abort_reason: str | None = None
     rounds_completed: int | None = None
     tokens_spent: int = 0
+    tokens_replayed: int = 0
     tokens_estimated: bool = False
+    run_id: str | None = None
+    journal_path: str | None = None

@@ -8,7 +8,7 @@ import json
 import sys
 from collections import deque
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,34 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
+from cluxion_effort_ultracode.core.journal import (
+    DebateJournal,
+    JournaledLlm,
+    LazyLlm,
+    ResumeMismatch,
+    ResumeNotFound,
+    build_header,
+    journal_header,
+    journals_dir,
+    new_run_id,
+    read_records,
+)
+from cluxion_effort_ultracode.core.journal_lifecycle import WARN_SIZE_BYTES, gc_journals, list_journals
 from cluxion_effort_ultracode.doctor import render_json, render_text, run_doctor
+
+
+@dataclass(frozen=True)
+class _ConsensusConfig:
+    question: str
+    context: str
+    rounds: int
+    agents: int
+    agent_timeout: float
+    debate_budget: float
+    budget_tokens: int | None
+    models: list[str] | None
+    adapter: str
+    journal: DebateJournal
 
 
 class _ScriptedConsensusLlm:
@@ -55,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_consensus(namespace)
     if namespace.command == "doctor":
         return _doctor(namespace)
+    if namespace.command == "journals":
+        return _journals(namespace)
     parser.print_help()
     return 2
 
@@ -68,33 +97,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run an adversarial unanimous-consensus debate",
         description="Worst-case model cost: agents * (rounds + 1) calls, with tracked tokens_spent.",
     )
-    consensus.add_argument("--question", required=True, help="Decision, proposal, or question to decide")
-    consensus.add_argument("--context", default="", help="Optional context supplied to every agent")
+    consensus.add_argument("--question", help="Decision, proposal, or question to decide")
+    consensus.add_argument("--resume", help="Replay/continue a saved journal run_id")
+    consensus.add_argument("--context", default=None, help="Optional context supplied to every agent")
     consensus.add_argument(
         "--rounds",
         type=int,
-        default=3,
-        help=f"Maximum debate rounds after round 0, capped at {MAX_ROUNDS}",
+        default=None,
+        help=f"Maximum debate rounds after round 0, default 3, capped at {MAX_ROUNDS}",
     )
-    consensus.add_argument("--agents", type=int, default=3, help=f"Number of agents, default 3, capped at {MAX_AGENTS}")
+    consensus.add_argument("--agents", type=int, default=None, help=f"Number of agents, default 3, capped at {MAX_AGENTS}")
     consensus.add_argument(
         "--agent-timeout",
         type=float,
-        default=DEFAULT_AGENT_TIMEOUT_S,
+        default=None,
         help=f"Per-agent timeout in seconds, default {DEFAULT_AGENT_TIMEOUT_S:g}",
     )
     consensus.add_argument(
         "--debate-budget",
         type=float,
-        default=DEFAULT_DEBATE_BUDGET_S,
+        default=None,
         help=f"Total debate budget in seconds across all rounds, default {DEFAULT_DEBATE_BUDGET_S:g}",
     )
     consensus.add_argument("--budget-tokens", type=int, default=None, help="Optional total token ceiling")
-    consensus.add_argument("--models", default="", help="Comma-separated per-agent models, cycled across agents")
+    consensus.add_argument("--models", default=None, help="Comma-separated per-agent models, cycled across agents")
     consensus.add_argument(
         "--adapter",
         choices=["hermes", "mock-unanimous", "mock-no-consensus"],
-        default="hermes",
+        default=None,
         help=(
             "LLM adapter: hermes runs real hermes -z via the plugin default path; "
             "mock-* adapters are deterministic for local testing."
@@ -103,26 +133,45 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor = subparsers.add_parser("doctor", help="Run embedded health checks")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--verbose", action="store_true")
+
+    journals = subparsers.add_parser("journals", help="Inspect or clean debate journals")
+    journal_commands = journals.add_subparsers(dest="journal_command", required=True)
+    journal_commands.add_parser("list", help="List recorded debate journals")
+    show = journal_commands.add_parser("show", help="Show one journal")
+    show.add_argument("run_id")
+    gc = journal_commands.add_parser("gc", help="Garbage-collect old journals")
+    gc.add_argument("--older-than-days", type=int, default=7)
+    gc.add_argument("--apply", action="store_true")
     return parser
 
 
 def _run_consensus(namespace: argparse.Namespace) -> int:
+    journal_info: dict[str, object] = {}
     try:
-        adapter = _resolve_adapter(namespace.adapter, agents=namespace.agents, rounds=namespace.rounds)
-        models = _parse_models(namespace.models)
+        config = _prepare_consensus(namespace)
+        journal_info = {"run_id": config.journal.run_id, "journal_path": str(config.journal.path)}
+        adapter = LazyLlm(lambda: _resolve_adapter(config.adapter, agents=config.agents, rounds=config.rounds))
+        journaled = JournaledLlm(adapter, config.journal)
         engine = ConsensusEngine(
-            adapter,
-            agents_count=namespace.agents,
-            max_rounds=namespace.rounds,
-            agent_timeout_s=namespace.agent_timeout,
-            debate_budget_s=namespace.debate_budget,
-            budget_tokens=namespace.budget_tokens,
-            models=models,
+            journaled,
+            agents_count=config.agents,
+            max_rounds=config.rounds,
+            agent_timeout_s=config.agent_timeout,
+            debate_budget_s=config.debate_budget,
+            budget_tokens=config.budget_tokens,
+            models=config.models,
             progress_callback=lambda round_index, phase: print(
                 f"round {round_index} {phase} start", file=sys.stderr
             ),
         )
-        result = engine.decide(namespace.question, context=namespace.context)
+        result = engine.decide(config.question, context=config.context)
+        config.journal.append_result(result)
+    except ResumeMismatch as exc:
+        print(json.dumps({"ok": False, "error": "resume_mismatch", "fields": exc.fields}, ensure_ascii=False))
+        return 1
+    except ResumeNotFound as exc:
+        print(json.dumps({"ok": False, "error": "resume_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        return 1
     except HermesExecutableNotFoundError as exc:
         print(
             json.dumps(
@@ -130,6 +179,7 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
                     "ok": False,
                     "error": "hermes_not_found",
                     "message": str(exc),
+                    **journal_info,
                     "hint": (
                         "Ensure the hermes executable is on PATH, or configure "
                         "CLUXION_EFFORT_ULTRACODE_HERMES_BINARY."
@@ -140,10 +190,75 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
         )
         return 1
     except (ConsensusProtocolError, ValueError) as exc:
-        print(json.dumps({"ok": False, "error": type(exc).__name__, "message": str(exc)}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"ok": False, "error": type(exc).__name__, "message": str(exc), **journal_info},
+                ensure_ascii=False,
+            )
+        )
         return 1
     print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     return 0
+
+
+def _prepare_consensus(namespace: argparse.Namespace) -> _ConsensusConfig:
+    saved = journal_header(namespace.resume) if namespace.resume else None
+    question = namespace.question if namespace.question is not None else str((saved or {}).get("question", ""))
+    if not question.strip():
+        raise ValueError("question is required unless --resume points to a journal")
+    context = namespace.context if namespace.context is not None else str((saved or {}).get("context", ""))
+    rounds = int(_saved_or(namespace.rounds, saved, "max_rounds", 3))
+    agents = int(_saved_or(namespace.agents, saved, "agents_count", 3))
+    agent_timeout = float(_saved_or(namespace.agent_timeout, saved, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S))
+    debate_budget = float(_saved_or(namespace.debate_budget, saved, "debate_budget_s", DEFAULT_DEBATE_BUDGET_S))
+    budget_tokens = _optional_int(_saved_or(namespace.budget_tokens, saved, "budget_tokens", None))
+    models = _parse_models(namespace.models) if namespace.models is not None else _saved_models(saved)
+    adapter = namespace.adapter or str((saved or {}).get("adapter") or "hermes")
+    run_id = namespace.resume or new_run_id()
+    header = build_header(
+        run_id=run_id,
+        question=question,
+        context=context,
+        agents_count=agents,
+        max_rounds=rounds,
+        models=models or [],
+        adapter=adapter,
+        agent_timeout_s=agent_timeout,
+        debate_budget_s=debate_budget,
+        budget_tokens=budget_tokens,
+    )
+    journal = DebateJournal.resume(run_id, header) if namespace.resume else DebateJournal.start(header)
+    return _ConsensusConfig(
+        question=question,
+        context=context,
+        rounds=rounds,
+        agents=agents,
+        agent_timeout=agent_timeout,
+        debate_budget=debate_budget,
+        budget_tokens=budget_tokens,
+        models=models,
+        adapter=adapter,
+        journal=journal,
+    )
+
+
+def _saved_or(value: object, saved: Mapping[str, object] | None, key: str, default: object) -> object:
+    if value is not None:
+        return value
+    if saved is not None and key in saved:
+        return saved[key]
+    return default
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(value)
+
+
+def _saved_models(saved: Mapping[str, object] | None) -> list[str] | None:
+    if saved is None:
+        return None
+    models = saved.get("models", [])
+    return [str(model) for model in models] if isinstance(models, list) and models else None
 
 
 def _resolve_adapter(name: str, *, agents: int, rounds: int) -> CallableLlmAdapter | _ScriptedConsensusLlm:
@@ -162,13 +277,41 @@ def _mock_adapter(name: str, *, agents: int, rounds: int) -> CallableLlmAdapter 
     raise ValueError(f"unknown adapter: {name}")
 
 
-def _parse_models(raw: str) -> list[str] | None:
-    if not raw.strip():
+def _parse_models(raw: str | None) -> list[str] | None:
+    if raw is None or not raw.strip():
         return None
     models = [item.strip() for item in raw.split(",")]
     if any(not model for model in models):
         raise ValueError("models entries must be non-empty")
     return models
+
+
+def _journals(namespace: argparse.Namespace) -> int:
+    try:
+        if namespace.journal_command == "list":
+            payload = list_journals()
+            if int(payload["total_bytes"]) > WARN_SIZE_BYTES:
+                print(
+                    f"warning: journal directory exceeds {WARN_SIZE_BYTES} bytes: {payload['total_bytes']}",
+                    file=sys.stderr,
+                )
+        elif namespace.journal_command == "show":
+            run_id = namespace.run_id
+            payload = {"run_id": run_id, "records": read_records(journals_dir() / f"{run_id}.jsonl")}
+        elif namespace.journal_command == "gc":
+            if namespace.older_than_days < 0:
+                raise ValueError("--older-than-days must be non-negative")
+            payload = gc_journals(older_than_days=namespace.older_than_days, apply=namespace.apply)
+        else:
+            raise ValueError(f"unknown journals command: {namespace.journal_command}")
+    except ResumeNotFound as exc:
+        print(json.dumps({"ok": False, "error": "resume_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        return 1
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": "ValueError", "message": str(exc)}, ensure_ascii=False))
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def _position(stance: str, rationale: str, evidence: list[str], confidence: float = 0.75) -> dict[str, Any]:
