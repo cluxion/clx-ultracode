@@ -12,6 +12,8 @@ Useful flags:
 
 ```bash
 cluxion-ultracode consensus --question "$ARGUMENTS" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600 --budget-tokens 120000 --models cheap,strong,cheap
+cluxion-ultracode consensus --question-file <path>
+cat <path> | cluxion-ultracode consensus --question -
 cluxion-ultracode consensus --resume <run_id>
 cluxion-ultracode journals list
 cluxion-ultracode journals show <run_id>

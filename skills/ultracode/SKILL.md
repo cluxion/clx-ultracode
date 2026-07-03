@@ -19,6 +19,8 @@ Useful options:
 cluxion-ultracode consensus --question "<decision>" --rounds 3 --agents 3
 cluxion-ultracode consensus --question "<decision>" --agent-timeout 180 --debate-budget 600
 cluxion-ultracode consensus --question "<decision>" --budget-tokens 120000 --models cheap,strong,cheap
+cluxion-ultracode consensus --question-file <path>
+cat <path> | cluxion-ultracode consensus --question -
 cluxion-ultracode consensus --question "<decision>" --adapter mock-unanimous
 cluxion-ultracode consensus --resume <run_id>
 ```

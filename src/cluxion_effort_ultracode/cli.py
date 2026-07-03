@@ -97,7 +97,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run an adversarial unanimous-consensus debate",
         description="Worst-case model cost: agents * (rounds + 1) calls, with tracked tokens_spent.",
     )
-    consensus.add_argument("--question", help="Decision, proposal, or question to decide")
+    consensus.add_argument("--question", help="Decision, proposal, or question to decide; use '-' to read stdin")
+    consensus.add_argument("--question-file", help="Read the decision question from a UTF-8 text file")
     consensus.add_argument("--resume", help="Replay/continue a saved journal run_id")
     consensus.add_argument("--context", default=None, help="Optional context supplied to every agent")
     consensus.add_argument(
@@ -106,7 +107,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Maximum debate rounds after round 0, default 3, capped at {MAX_ROUNDS}",
     )
-    consensus.add_argument("--agents", type=int, default=None, help=f"Number of agents, default 3, capped at {MAX_AGENTS}")
+    consensus.add_argument("--agents", default=None, help=f"Number of agents, default 3, capped at {MAX_AGENTS}")
     consensus.add_argument(
         "--agent-timeout",
         type=float,
@@ -203,17 +204,16 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
 
 def _prepare_consensus(namespace: argparse.Namespace) -> _ConsensusConfig:
     saved = journal_header(namespace.resume) if namespace.resume else None
-    question = namespace.question if namespace.question is not None else str((saved or {}).get("question", ""))
-    if not question.strip():
-        raise ValueError("question is required unless --resume points to a journal")
+    question = _question_arg(namespace, saved)
     context = namespace.context if namespace.context is not None else str((saved or {}).get("context", ""))
     rounds = int(_saved_or(namespace.rounds, saved, "max_rounds", 3))
-    agents = int(_saved_or(namespace.agents, saved, "agents_count", 3))
+    agents = _bounded_int(_saved_or(namespace.agents, saved, "agents_count", 3), "agents_count", 2, MAX_AGENTS)
     agent_timeout = float(_saved_or(namespace.agent_timeout, saved, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S))
     debate_budget = float(_saved_or(namespace.debate_budget, saved, "debate_budget_s", DEFAULT_DEBATE_BUDGET_S))
     budget_tokens = _optional_int(_saved_or(namespace.budget_tokens, saved, "budget_tokens", None))
     models = _parse_models(namespace.models) if namespace.models is not None else _saved_models(saved)
     adapter = namespace.adapter or str((saved or {}).get("adapter") or "hermes")
+    _validate_pre_journal(rounds, agent_timeout, debate_budget, budget_tokens)
     run_id = namespace.resume or new_run_id()
     header = build_header(
         run_id=run_id,
@@ -254,6 +254,65 @@ def _optional_int(value: object) -> int | None:
     return None if value is None else int(value)
 
 
+def _question_arg(namespace: argparse.Namespace, saved: Mapping[str, object] | None) -> str:
+    if namespace.question_file and namespace.question is not None:
+        raise ValueError("use either --question or --question-file, not both")
+    if namespace.question_file:
+        try:
+            question = Path(namespace.question_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"question file could not be read: {exc}") from exc
+    elif namespace.question == "-":
+        question = sys.stdin.read()
+    elif namespace.question is not None:
+        question = namespace.question
+    else:
+        question = str((saved or {}).get("question", ""))
+    question = question.strip()
+    if not question:
+        raise ValueError("question is required unless --resume points to a journal")
+    return question
+
+
+def _bounded_int(value: object, name: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    raw = str(value).strip()
+    sign = -1 if raw.startswith("-") else 1
+    digits = raw[1:] if raw[:1] in "+-" else raw
+    if not digits.isdecimal():
+        raise ValueError(f"{name} must be an integer")
+    significant = digits.lstrip("0") or "0"
+    if sign < 0 and significant != "0":
+        raise ValueError(f"{name} must be at least {minimum}")
+    if len(significant) > len(str(maximum)):
+        raise ValueError(f"{name} must be <= {maximum}")
+    parsed = sign * int(significant)
+    if parsed < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    if parsed > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
+    return parsed
+
+
+def _validate_pre_journal(
+    rounds: int,
+    agent_timeout: float,
+    debate_budget: float,
+    budget_tokens: int | None,
+) -> None:
+    if rounds < 0:
+        raise ValueError("max_rounds must be non-negative")
+    if rounds > MAX_ROUNDS:
+        raise ValueError(f"max_rounds must be <= {MAX_ROUNDS}")
+    if agent_timeout <= 0:
+        raise ValueError("agent_timeout_s must be positive")
+    if debate_budget <= 0:
+        raise ValueError("debate_budget_s must be positive")
+    if budget_tokens is not None and budget_tokens <= 0:
+        raise ValueError("budget_tokens must be positive")
+
+
 def _saved_models(saved: Mapping[str, object] | None) -> list[str] | None:
     if saved is None:
         return None
@@ -278,7 +337,7 @@ def _mock_adapter(name: str, *, agents: int, rounds: int) -> CallableLlmAdapter 
 
 
 def _parse_models(raw: str | None) -> list[str] | None:
-    if raw is None or not raw.strip():
+    if raw is None:
         return None
     models = [item.strip() for item in raw.split(",")]
     if any(not model for model in models):

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -12,6 +16,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from cluxion_effort_ultracode.core import ConsensusProtocolError
+
+_KILL_DRAIN_TIMEOUT_SECONDS = 0.5
 
 
 class HermesExecutableNotFoundError(RuntimeError):
@@ -92,17 +98,27 @@ class HermesSubprocessLlm:
     def _run_oneshot_once(self, command: list[str]) -> str:
         self._local.last_usage = None
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,
+                text=True,
+                start_new_session=True,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (OSError, ValueError):
             raise
 
+        _register_child(process.pid)
+        try:
+            stdout, stderr = process.communicate(timeout=self.timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = _terminate_process_group(process, grace_seconds=_termination_grace(self.timeout_seconds))
+            raise subprocess.TimeoutExpired(command, self.timeout_seconds, output=stdout, stderr=stderr) from exc
+        finally:
+            _unregister_child(process.pid)
+
+        completed = subprocess.CompletedProcess(command, process.returncode or 0, stdout, stderr)
         stdout = completed.stdout.strip()
         stderr = completed.stderr.strip()
         if completed.returncode != 0:
@@ -231,6 +247,80 @@ def _token_int(value: Mapping[str, Any], *keys: str) -> int | None:
         if isinstance(raw, float) and raw.is_integer():
             return int(raw)
     return None
+
+
+_live_processes: set[int] = set()
+_signal_hooks_installed = False
+
+
+def _register_child(pid: int) -> None:
+    global _signal_hooks_installed
+    _live_processes.add(pid)
+    if _signal_hooks_installed:
+        return
+    _signal_hooks_installed = True
+    atexit.register(_reap_live_processes)
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous = signal.getsignal(signum)
+
+        def _handler(signo: int, frame: object, _previous=previous) -> None:
+            _reap_live_processes()
+            if callable(_previous):
+                _previous(signo, frame)
+            else:
+                signal.signal(signo, signal.SIG_DFL)
+                os.kill(os.getpid(), signo)
+
+        with contextlib.suppress(ValueError, OSError):
+            signal.signal(signum, _handler)
+
+
+def _unregister_child(pid: int) -> None:
+    _live_processes.discard(pid)
+
+
+def _reap_live_processes() -> None:
+    for pid in sorted(_live_processes):
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+    _live_processes.clear()
+
+
+def _termination_grace(timeout_seconds: float) -> float:
+    return min(5.0, max(0.5, timeout_seconds * 0.5))
+
+
+def _terminate_process_group(process: subprocess.Popen[str], *, grace_seconds: float) -> tuple[str, str]:
+    stderr_chunks: list[str] = []
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        stderr_chunks.append(f"failed to terminate hermes process group {process.pid}: {exc}")
+    try:
+        stdout, stderr = process.communicate(timeout=grace_seconds)
+        return stdout or "", _join_stderr(stderr, stderr_chunks)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            stderr_chunks.append(f"failed to kill hermes process group {process.pid}: {exc}")
+        try:
+            stdout, stderr = process.communicate(timeout=_KILL_DRAIN_TIMEOUT_SECONDS)
+            return stdout or "", _join_stderr(stderr, stderr_chunks)
+        except subprocess.TimeoutExpired:
+            stderr_chunks.append(f"hermes process group {process.pid} did not exit after SIGKILL")
+            return "", _join_stderr("", stderr_chunks)
+
+
+def _join_stderr(stderr: str | None, chunks: list[str]) -> str:
+    parts = [part for part in [stderr or "", *chunks] if part]
+    return "\n".join(parts)
 
 
 __all__ = ["HermesExecutableNotFoundError", "HermesSubprocessLlm"]

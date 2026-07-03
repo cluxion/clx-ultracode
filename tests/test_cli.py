@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from io import StringIO
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError
 from cluxion_effort_ultracode.cli import main
+from cluxion_effort_ultracode.core.journal import journals_dir
 
 
 def test_consensus_mock_unanimous_adapter(capsys):
@@ -140,6 +144,84 @@ def test_consensus_cli_rejects_empty_model_entries(capsys):
     assert "models entries" in payload["message"]
 
 
+@pytest.mark.parametrize("models", ["", " "])
+def test_consensus_cli_rejects_explicit_empty_models(capsys, models: str):
+    exit_code = main(
+        [
+            "consensus",
+            "--question",
+            "Adopt?",
+            "--adapter",
+            "mock-unanimous",
+            "--models",
+            models,
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "ValueError"
+    assert "models entries" in payload["message"]
+
+
+def test_consensus_cli_rejects_huge_agents_before_journal(capsys):
+    huge = "9" * 500
+    started = time.perf_counter()
+
+    exit_code = main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", huge])
+
+    elapsed = time.perf_counter() - started
+    payload = json.loads(capsys.readouterr().out)
+    assert elapsed < 1
+    assert exit_code == 1
+    assert payload == {"ok": False, "error": "ValueError", "message": "agents_count must be <= 8"}
+    assert not journals_dir().exists()
+
+
+@pytest.mark.parametrize("question", ["", " "])
+def test_consensus_cli_rejects_empty_question(capsys, question: str):
+    exit_code = main(["consensus", "--question", question, "--adapter", "mock-unanimous"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "ValueError"
+    assert "question" in payload["message"]
+
+
+def test_consensus_cli_reads_question_from_stdin(capsys, monkeypatch):
+    monkeypatch.setattr("sys.stdin", StringIO("Adopt from stdin?"))
+
+    exit_code = main(["consensus", "--question", "-", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["status"] == "unanimous"
+
+
+def test_consensus_cli_reads_large_question_file(capsys, tmp_path: Path):
+    question_file = tmp_path / "question.txt"
+    question_file.write_text("Adopt from file?\n" + ("x" * 1_000_000), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "consensus",
+            "--question-file",
+            str(question_file),
+            "--adapter",
+            "mock-unanimous",
+            "--agents",
+            "2",
+            "--rounds",
+            "0",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["status"] == "unanimous"
+
+
 def test_consensus_cli_resume_mismatch_is_structured(capsys):
     assert (
         main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
@@ -215,6 +297,7 @@ def test_consensus_help_documents_cost_formula(capsys):
     assert "--debate-budget" in out
     assert "--budget-tokens" in out
     assert "--models" in out
+    assert "--question-file" in out
 
 
 @pytest.mark.skipif(

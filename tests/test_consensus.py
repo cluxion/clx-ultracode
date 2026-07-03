@@ -25,6 +25,12 @@ def test_consensus_engine_rejects_agent_counts_above_hard_cap() -> None:
         ConsensusEngine(ScriptedLlm([]), agents_count=999)
 
 
+@pytest.mark.parametrize("question", ["", " "])
+def test_consensus_engine_rejects_empty_question(question: str) -> None:
+    with pytest.raises(ValueError, match="question"):
+        ConsensusEngine(ScriptedLlm([])).decide(question)
+
+
 class ScriptedLlm:
     def __init__(self, outputs: list[dict[str, Any]]) -> None:
         self.outputs = deque(outputs)

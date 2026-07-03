@@ -128,6 +128,9 @@ class ConsensusEngine:
     def decide(self, question: str, *, context: str = "") -> ConsensusResult:
         """Run independent positions, debate revisions, and deterministic convergence checks."""
 
+        question = question.strip()
+        if not question:
+            raise ValueError("question must be non-empty")
         self._tokens_spent = 0
         self._tokens_estimated = False
         transcript: list[ConsensusRound] = []

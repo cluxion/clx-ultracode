@@ -7,6 +7,8 @@ from collections import deque
 from collections.abc import Mapping
 from typing import Any
 
+import pytest
+
 from cluxion_effort_ultracode import plugin
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError
 
@@ -163,6 +165,17 @@ def test_consensus_handler_routes_models_and_rejects_empty_entries() -> None:
     assert bad["ok"] is False
     assert bad["error"] == "ValueError"
     assert "models entries" in bad["message"]
+
+
+@pytest.mark.parametrize("question", ["", " "])
+def test_consensus_handler_rejects_empty_question(question: str) -> None:
+    handler = plugin.build_consensus_handler(lambda: NoCallLlm())
+
+    payload = json.loads(handler({"question": question}))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "ValueError"
+    assert "question" in payload["message"]
 
 
 def test_consensus_handler_returns_honest_missing_hermes_error() -> None:
