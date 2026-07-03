@@ -11,8 +11,9 @@ cluxion-ultracode consensus --question "$ARGUMENTS"
 Useful flags:
 
 ```bash
-cluxion-ultracode consensus --question "$ARGUMENTS" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600
+cluxion-ultracode consensus --question "$ARGUMENTS" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600 --budget-tokens 120000 --models cheap,strong,cheap
 ```
 
-Worst-case cost: `agents * (rounds + 1)` model calls. Budget/quorum aborts return JSON with
-`status: "aborted"` and a partial transcript.
+Worst-case cost: `agents * (rounds + 1)` model calls plus `tokens_spent`. Token usage is real when
+Hermes reports usage, otherwise `estimated: true` via chars/4. Budget/quorum aborts return JSON
+with `status: "aborted"` and a partial transcript.

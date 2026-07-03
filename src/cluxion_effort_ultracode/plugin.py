@@ -21,11 +21,22 @@ from cluxion_effort_ultracode.core.ports import LlmPort
 from cluxion_effort_ultracode.doctor import render_json, run_doctor
 from cluxion_effort_ultracode.llm_factory import default_llm
 
+CONSENSUS_ARG_KEYS = {
+    "question",
+    "context",
+    "rounds",
+    "agents",
+    "agent_timeout",
+    "debate_budget",
+    "budget_tokens",
+    "models",
+}
+
 CONSENSUS_SCHEMA: dict[str, Any] = {
     "name": "cluxion_consensus",
     "description": (
         "Run an opt-in deep-deliberation consensus debate through Hermes oneshot. "
-        "Worst-case cost is agents * (rounds + 1) hermes -z model calls."
+        "Worst-case cost is agents * (rounds + 1) hermes -z model calls, plus tracked tokens."
     ),
     "parameters": {
         "type": "object",
@@ -64,6 +75,17 @@ CONSENSUS_SCHEMA: dict[str, Any] = {
                 "description": "Total debate budget in seconds across all rounds.",
                 "default": DEFAULT_DEBATE_BUDGET_S,
                 "exclusiveMinimum": 0,
+            },
+            "budget_tokens": {
+                "type": "integer",
+                "description": "Optional total token ceiling. Omit for unlimited.",
+                "exclusiveMinimum": 0,
+            },
+            "models": {
+                "type": "array",
+                "description": "Optional per-agent model list, cycled across agent seats.",
+                "items": {"type": "string"},
+                "default": [],
             },
         },
         "required": ["question"],
@@ -146,12 +168,15 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
         return {"ok": False, "error": "ValueError", "message": "args must be an object"}
 
     try:
+        _reject_unknown_args(args)
         question = _text_arg(args, "question", required=True)
         context = _text_arg(args, "context", default="")
         rounds = _int_arg(args, "rounds", default=3)
         agents = _int_arg(args, "agents", default=3)
         agent_timeout = _float_arg(args, "agent_timeout", default=DEFAULT_AGENT_TIMEOUT_S)
         debate_budget = _float_arg(args, "debate_budget", default=DEFAULT_DEBATE_BUDGET_S)
+        budget_tokens = _optional_int_arg(args, "budget_tokens")
+        models = _models_arg(args, "models")
         llm = _call_llm_factory(llm_factory)
         result = ConsensusEngine(
             llm,
@@ -159,6 +184,8 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             max_rounds=rounds,
             agent_timeout_s=agent_timeout,
             debate_budget_s=debate_budget,
+            budget_tokens=budget_tokens,
+            models=models,
         ).decide(question, context=context)
     except HermesExecutableNotFoundError as exc:
         return {
@@ -184,6 +211,12 @@ def _call_llm_factory(llm_factory: object) -> LlmPort:
     if not callable(complete):
         raise ValueError("llm_factory must return an object with complete(...)")
     return llm
+
+
+def _reject_unknown_args(args: Mapping[str, object]) -> None:
+    unknown = sorted(set(args) - CONSENSUS_ARG_KEYS)
+    if unknown:
+        raise ValueError(f"unknown arguments: {', '.join(unknown)}")
 
 
 def _text_arg(
@@ -224,6 +257,37 @@ def _float_arg(args: Mapping[str, object], key: str, *, default: float) -> float
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{key} must be numeric") from exc
+
+
+def _optional_int_arg(args: Mapping[str, object], key: str) -> int | None:
+    if key not in args or args[key] is None:
+        return None
+    value = args[key]
+    if isinstance(value, bool):
+        raise ValueError(f"{key} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be an integer") from exc
+
+
+def _models_arg(args: Mapping[str, object], key: str) -> list[str] | None:
+    value = args.get(key)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        models = [item.strip() for item in value.split(",")] if value.strip() else []
+    elif isinstance(value, list):
+        models = []
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                raise ValueError(f"{key}[{index}] must be a string")
+            models.append(item.strip())
+    else:
+        raise ValueError(f"{key} must be a list of strings")
+    if any(not model for model in models):
+        raise ValueError("models entries must be non-empty")
+    return models or None
 
 
 def _handle_doctor(args: dict[str, object], **_: object) -> str:

@@ -106,12 +106,35 @@ def test_consensus_cli_exposes_timeout_and_budget_flags(capsys):
             "3",
             "--debate-budget",
             "20",
+            "--budget-tokens",
+            "10000",
+            "--models",
+            "cheap,strong",
         ]
     )
     err = capsys.readouterr().err
     assert exit_code == 0
     assert "round 0 independent start" in err
     assert "round 1 debate start" not in err
+
+
+def test_consensus_cli_rejects_empty_model_entries(capsys):
+    exit_code = main(
+        [
+            "consensus",
+            "--question",
+            "Adopt?",
+            "--adapter",
+            "mock-unanimous",
+            "--models",
+            "cheap,,strong",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "ValueError"
+    assert "models entries" in payload["message"]
 
 
 def test_doctor_json_output_is_stdout_pure(capsys):
@@ -128,6 +151,8 @@ def test_consensus_help_documents_cost_formula(capsys):
     assert "agents * (rounds + 1)" in out
     assert "--agent-timeout" in out
     assert "--debate-budget" in out
+    assert "--budget-tokens" in out
+    assert "--models" in out
 
 
 @pytest.mark.skipif(

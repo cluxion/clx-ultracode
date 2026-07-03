@@ -101,3 +101,5 @@ def test_invalid_timeouts_rejected() -> None:
         ConsensusEngine(llm, agent_timeout_s=0)
     with pytest.raises(ValueError):
         ConsensusEngine(llm, debate_budget_s=-1)
+    with pytest.raises(ValueError):
+        ConsensusEngine(llm, budget_tokens=0)

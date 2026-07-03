@@ -33,7 +33,7 @@ def test_structured_complete_parses_json_from_subprocess_stdout() -> None:
     assert run.call_args.kwargs["timeout"] == 12
 
 
-def test_model_override_is_passed_to_hermes_oneshot() -> None:
+def test_default_model_is_passed_to_hermes_oneshot() -> None:
     llm = HermesSubprocessLlm(binary="/opt/hermes", timeout_seconds=5, model="grok-test")
 
     with patch(
@@ -42,7 +42,31 @@ def test_model_override_is_passed_to_hermes_oneshot() -> None:
     ) as run:
         assert llm.complete("Prompt") == "raw text"
 
-    assert run.call_args.args[0] == ["/opt/hermes", "--model", "grok-test", "-z", "Prompt"]
+    assert run.call_args.args[0] == ["/opt/hermes", "-m", "grok-test", "-z", "Prompt"]
+
+
+def test_per_call_model_override_reaches_hermes_m_flag() -> None:
+    llm = HermesSubprocessLlm(binary="/opt/hermes", timeout_seconds=5, model="default-model")
+
+    with patch(
+        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.run",
+        return_value=completed("raw text"),
+    ) as run:
+        assert llm.complete("Prompt", model="seat-model") == "raw text"
+
+    assert run.call_args.args[0] == ["/opt/hermes", "-m", "seat-model", "-z", "Prompt"]
+
+
+def test_hermes_usage_is_feature_detected_from_stderr_json() -> None:
+    llm = HermesSubprocessLlm()
+
+    with patch(
+        "cluxion_effort_ultracode.adapters.hermes_llm.subprocess.run",
+        return_value=completed("raw text", stderr='{"usage":{"input_tokens":7,"output_tokens":5}}'),
+    ):
+        assert llm.complete("Prompt") == "raw text"
+
+    assert llm.last_usage == {"input_tokens": 7, "output_tokens": 5, "total_tokens": 12, "estimated": False}
 
 
 def test_structured_complete_retries_once_after_malformed_json() -> None:

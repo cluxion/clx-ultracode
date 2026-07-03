@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+import cluxion_effort_ultracode.core.consensus as consensus_module
 from cluxion_effort_ultracode.adapters import CallableLlmAdapter
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError, normalize_stance
 
@@ -29,8 +30,14 @@ class ScriptedLlm:
         self.outputs = deque(outputs)
         self.calls: list[dict[str, Any]] = []
 
-    def complete(self, prompt: str, *, schema: dict[str, Any] | None = None) -> dict[str, Any]:
-        self.calls.append({"prompt": prompt, "schema": schema})
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append({"prompt": prompt, "schema": schema, "model": model})
         if not self.outputs:
             pytest.fail("scripted LLM exhausted")
         return self.outputs.popleft()
@@ -111,6 +118,73 @@ def test_debate_converges_to_unanimity_with_concessions() -> None:
     assert result_shape["status"] == "unanimous"
     assert result_shape["agents_count"] == 3
     assert len(result_shape["transcript"][1]["positions"]) == 3
+    assert result_shape["tokens_spent"] > 0
+    assert result_shape["tokens_estimated"] is True
+    assert result_shape["transcript"][0]["tokens_spent"] > 0
+    assert result_shape["transcript"][0]["positions"][0]["tokens"]["estimated"] is True
+
+
+def test_token_budget_abort_preserves_partial_transcript() -> None:
+    llm = ScriptedLlm([position("Adopt"), position("Delay")])
+
+    result = ConsensusEngine(llm, agents_count=2, max_rounds=0, budget_tokens=1).decide("Should we adopt?")
+
+    assert result.status == "aborted"
+    assert result.abort_reason == "token_budget_exceeded"
+    assert result.rounds_completed == 0
+    assert result.tokens_spent > 1
+    assert result.tokens_estimated is True
+    assert len(result.transcript) == 1
+    assert result.transcript[0].tokens_spent == result.tokens_spent
+    assert result.transcript[0].positions[0].tokens is not None
+    assert result.transcript[0].positions[0].tokens.estimated is True
+
+
+def test_real_token_usage_beats_estimator() -> None:
+    class UsageLlm:
+        def __init__(self) -> None:
+            self.outputs = [position("Adopt"), position("Adopt")]
+            self.last_usage: dict[str, int | bool] | None = None
+
+        def complete(
+            self,
+            prompt: str,
+            *,
+            schema: dict[str, Any] | None = None,
+            model: str | None = None,
+        ) -> dict[str, Any]:
+            del prompt, schema, model
+            self.last_usage = {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5, "estimated": False}
+            return self.outputs.pop(0)
+
+    result = ConsensusEngine(UsageLlm(), agents_count=2, max_rounds=0).decide("Q?")
+
+    assert result.status == "unanimous"
+    assert result.tokens_spent == 10
+    assert result.tokens_estimated is False
+    assert result.transcript[0].positions[0].tokens is not None
+    assert result.transcript[0].positions[0].tokens.total_tokens == 5
+
+
+def test_models_are_cycled_across_agent_seats() -> None:
+    llm = ScriptedLlm([position("Adopt") for _ in range(5)])
+
+    result = ConsensusEngine(llm, agents_count=5, max_rounds=0, models=["cheap", "strong"]).decide("Q?")
+
+    assert result.status == "unanimous"
+    assert [call["model"] for call in llm.calls] == ["cheap", "strong", "cheap", "strong", "cheap"]
+    assert [position.model for position in result.transcript[0].positions] == [
+        "cheap",
+        "strong",
+        "cheap",
+        "strong",
+        "cheap",
+    ]
+
+
+def test_empty_model_entries_are_rejected() -> None:
+    with pytest.raises(ValueError, match="models entries must be non-empty"):
+        ConsensusEngine(ScriptedLlm([]), models=["cheap", " "])
 
 
 def test_no_unanimous_consensus_records_dissent() -> None:
@@ -222,7 +296,14 @@ class AgentKeyedScriptedLlm:
         self.max_active_calls = 0
         self._lock = threading.Lock()
 
-    def complete(self, prompt: str, *, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        del model
         agent_id = _agent_id_from_prompt(prompt)
         with self._lock:
             if not self.phases:
@@ -299,3 +380,14 @@ def test_parallel_round_matches_serial_outcome_and_order() -> None:
     assert parallel_stances == serial_stances
 
     assert parallel_llm.max_active_calls >= 2
+
+
+def test_parallel_worker_cap_leaves_cpu_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(consensus_module.os, "cpu_count", lambda: 3)
+    phase = {f"agent-{index}": position("Adopt proposal", [f"E{index}"]) for index in range(1, 6)}
+    llm = AgentKeyedScriptedLlm([phase], latencies={agent_id: 0.03 for agent_id in phase})
+
+    result = ConsensusEngine(llm, agents_count=5, max_rounds=0).decide("Should we adopt?")
+
+    assert result.status == "unanimous"
+    assert llm.max_active_calls == 2

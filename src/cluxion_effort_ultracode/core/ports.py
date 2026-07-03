@@ -15,7 +15,13 @@ class LlmPort(Protocol):
     but the core never imports host SDKs or calls host APIs directly.
     """
 
-    def complete(self, prompt: str, *, schema: JsonMapping | None = None) -> JsonMapping | str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: JsonMapping | None = None,
+        model: str | None = None,
+    ) -> JsonMapping | str:
         """Return either a structured object matching schema or raw text."""
 
 

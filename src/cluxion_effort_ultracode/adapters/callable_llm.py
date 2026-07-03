@@ -22,9 +22,16 @@ class CallableLlmAdapter:
         self._complete = complete
         self._structured_complete = structured_complete
 
-    def complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any] | str:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: Mapping[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Mapping[str, Any] | str:
         """Return callable output, parsing JSON text when structured output is requested."""
 
+        del model
         if schema is not None and self._structured_complete is not None:
             return _maybe_parse_json(self._structured_complete(prompt, schema))
         return _maybe_parse_json(self._complete(prompt)) if schema is not None else self._complete(prompt)

@@ -49,13 +49,26 @@ class ScriptedLlm:
         self.outputs = deque(outputs)
         self.calls: list[dict[str, object]] = []
 
-    def complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
-        self.calls.append({"prompt": prompt, "schema": schema})
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: Mapping[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Mapping[str, Any]:
+        self.calls.append({"prompt": prompt, "schema": schema, "model": model})
         return self.outputs.popleft()
 
 
 class MissingHermesLlm:
-    def complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: Mapping[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Mapping[str, Any]:
+        del prompt, schema, model
         raise HermesExecutableNotFoundError("Hermes executable not found: 'hermes'")
 
 
@@ -87,6 +100,8 @@ def test_register_uses_real_hermes_tool_contract() -> None:
     assert schema["parameters"]["type"] == "object"
     assert schema["parameters"]["required"] == ["question"]
     assert "question" in schema["parameters"]["properties"]
+    assert "budget_tokens" in schema["parameters"]["properties"]
+    assert "models" in schema["parameters"]["properties"]
 
 
 def test_register_tolerates_host_without_register_tool() -> None:
@@ -107,6 +122,22 @@ def test_consensus_handler_returns_json_string_with_scripted_llm() -> None:
     assert len(llm.calls) == 2
 
 
+def test_consensus_handler_routes_models_and_rejects_empty_entries() -> None:
+    llm = ScriptedLlm([position("yes"), position("YES.")])
+    handler = plugin.build_consensus_handler(lambda: llm)
+
+    payload = json.loads(handler({"question": "Should we answer yes?", "rounds": 0, "agents": 2, "models": ["a", "b"]}))
+
+    assert payload["ok"] is True
+    assert [call["model"] for call in llm.calls] == ["a", "b"]
+    assert payload["result"]["transcript"][0]["positions"][0]["model"] == "a"
+
+    bad = json.loads(handler({"question": "Q?", "models": ["a", ""]}))
+    assert bad["ok"] is False
+    assert bad["error"] == "ValueError"
+    assert "models entries" in bad["message"]
+
+
 def test_consensus_handler_returns_honest_missing_hermes_error() -> None:
     handler = plugin.build_consensus_handler(lambda: MissingHermesLlm())
 
@@ -123,3 +154,13 @@ def test_consensus_handler_returns_json_error_for_non_mapping_args() -> None:
     payload = json.loads(handler("not an object"))
 
     assert payload == {"ok": False, "error": "ValueError", "message": "args must be an object"}
+
+
+def test_consensus_handler_rejects_unknown_args() -> None:
+    handler = plugin.build_consensus_handler(lambda: MissingHermesLlm())
+
+    payload = json.loads(handler({"question": "Q?", "surprise": True}))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "ValueError"
+    assert payload["message"] == "unknown arguments: surprise"

@@ -27,7 +27,14 @@ class _ScriptedConsensusLlm:
     def __init__(self, outputs: list[Mapping[str, Any]]) -> None:
         self.outputs = deque(outputs)
 
-    def complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    def complete(
+        self,
+        prompt: str,
+        *,
+        schema: Mapping[str, Any] | None = None,
+        model: str | None = None,
+    ) -> Mapping[str, Any]:
+        del model
         if not self.outputs:
             raise ConsensusProtocolError("mock adapter exhausted before consensus engine completed")
         return self.outputs.popleft()
@@ -59,7 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     consensus = subparsers.add_parser(
         "consensus",
         help="Run an adversarial unanimous-consensus debate",
-        description="Worst-case model cost: agents * (rounds + 1) calls.",
+        description="Worst-case model cost: agents * (rounds + 1) calls, with tracked tokens_spent.",
     )
     consensus.add_argument("--question", required=True, help="Decision, proposal, or question to decide")
     consensus.add_argument("--context", default="", help="Optional context supplied to every agent")
@@ -82,6 +89,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DEBATE_BUDGET_S,
         help=f"Total debate budget in seconds across all rounds, default {DEFAULT_DEBATE_BUDGET_S:g}",
     )
+    consensus.add_argument("--budget-tokens", type=int, default=None, help="Optional total token ceiling")
+    consensus.add_argument("--models", default="", help="Comma-separated per-agent models, cycled across agents")
     consensus.add_argument(
         "--adapter",
         choices=["hermes", "mock-unanimous", "mock-no-consensus"],
@@ -100,12 +109,15 @@ def _build_parser() -> argparse.ArgumentParser:
 def _run_consensus(namespace: argparse.Namespace) -> int:
     try:
         adapter = _resolve_adapter(namespace.adapter, agents=namespace.agents, rounds=namespace.rounds)
+        models = _parse_models(namespace.models)
         engine = ConsensusEngine(
             adapter,
             agents_count=namespace.agents,
             max_rounds=namespace.rounds,
             agent_timeout_s=namespace.agent_timeout,
             debate_budget_s=namespace.debate_budget,
+            budget_tokens=namespace.budget_tokens,
+            models=models,
             progress_callback=lambda round_index, phase: print(
                 f"round {round_index} {phase} start", file=sys.stderr
             ),
@@ -148,6 +160,15 @@ def _mock_adapter(name: str, *, agents: int, rounds: int) -> CallableLlmAdapter 
     if name == "mock-no-consensus":
         return _ScriptedConsensusLlm(_mock_no_consensus_outputs(agents, rounds))
     raise ValueError(f"unknown adapter: {name}")
+
+
+def _parse_models(raw: str) -> list[str] | None:
+    if not raw.strip():
+        return None
+    models = [item.strip() for item in raw.split(",")]
+    if any(not model for model in models):
+        raise ValueError("models entries must be non-empty")
+    return models
 
 
 def _position(stance: str, rationale: str, evidence: list[str], confidence: float = 0.75) -> dict[str, Any]:

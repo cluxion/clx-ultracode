@@ -18,6 +18,16 @@ class DebatePoint:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """Token use for one LLM call."""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated: bool
+
+
+@dataclass(frozen=True)
 class AgentPosition:
     """One agent's structured stance in an independent or debate round."""
 
@@ -28,6 +38,8 @@ class AgentPosition:
     confidence: float
     conceded: list[DebatePoint] = field(default_factory=list)
     maintained: list[DebatePoint] = field(default_factory=list)
+    model: str | None = None
+    tokens: TokenUsage | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +49,7 @@ class ConsensusRound:
     round_index: int
     phase: RoundPhase
     positions: list[AgentPosition]
+    tokens_spent: int = 0
 
 
 @dataclass(frozen=True)
@@ -65,3 +78,5 @@ class ConsensusResult:
     majority_stance: str | None = None
     abort_reason: str | None = None
     rounds_completed: int | None = None
+    tokens_spent: int = 0
+    tokens_estimated: bool = False

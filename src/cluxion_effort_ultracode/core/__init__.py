@@ -7,6 +7,7 @@ from cluxion_effort_ultracode.core.types import (
     ConsensusRound,
     DebatePoint,
     Dissent,
+    TokenUsage,
 )
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "ConsensusRound",
     "DebatePoint",
     "Dissent",
+    "TokenUsage",
     "normalize_stance",
 ]

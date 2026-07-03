@@ -212,6 +212,12 @@ def test_hermes_timeout_configured_rejects_invalid(monkeypatch):
     assert "non-numeric" in detail
 
 
+def test_debate_non_termination_cost_mentions_token_ceiling():
+    status, detail = PROBES["debate_non_termination_cost"](_doctor_ctx())
+    assert status == "pass"
+    assert "token ceiling" in detail
+
+
 def test_dead_probes_removed():
     for dead in ("abi3_wheel_compatible", "sqlite_wal_mode_compatible", "import_availability"):
         assert dead not in PROBES

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import unicodedata
@@ -19,6 +20,8 @@ from cluxion_effort_ultracode.core.types import (
     ConsensusRound,
     DebatePoint,
     Dissent,
+    RoundPhase,
+    TokenUsage,
 )
 
 MAX_AGENTS = 8
@@ -91,6 +94,8 @@ class ConsensusEngine:
         rotate_devils_advocate: bool = True,
         agent_timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
         debate_budget_s: float = DEFAULT_DEBATE_BUDGET_S,
+        budget_tokens: int | None = None,
+        models: Sequence[str] | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> None:
         if agents_count < 2:
@@ -109,21 +114,37 @@ class ConsensusEngine:
             raise ValueError("agent_timeout_s must be positive")
         if debate_budget_s <= 0:
             raise ValueError("debate_budget_s must be positive")
+        if budget_tokens is not None and budget_tokens <= 0:
+            raise ValueError("budget_tokens must be positive")
+        clean_models = _validate_models(models)
         self.agent_timeout_s = agent_timeout_s
         self.debate_budget_s = debate_budget_s
+        self.budget_tokens = budget_tokens
+        self.models = clean_models
         self.progress_callback = progress_callback
+        self._tokens_spent = 0
+        self._tokens_estimated = False
 
     def decide(self, question: str, *, context: str = "") -> ConsensusResult:
         """Run independent positions, debate revisions, and deterministic convergence checks."""
 
+        self._tokens_spent = 0
+        self._tokens_estimated = False
         transcript: list[ConsensusRound] = []
         deadline = time.monotonic() + self.debate_budget_s
         try:
             self._emit_progress(0, "independent")
             current = self._initial_positions(question, context, deadline=deadline)
-            transcript.append(ConsensusRound(round_index=0, phase="independent", positions=current))
+            self._append_round(transcript, round_index=0, phase="independent", positions=current)
         except _ConsensusAbort as exc:
             return self._aborted_result([], transcript, reason=exc.reason, rounds_completed=0)
+        if self._token_budget_exceeded():
+            return self._aborted_result(
+                current,
+                transcript,
+                reason="token_budget_exceeded",
+                rounds_completed=0,
+            )
         if self._is_unanimous(current):
             return self._unanimous_result(current, transcript, rounds=0)
 
@@ -138,13 +159,20 @@ class ConsensusEngine:
             self._emit_progress(round_index, "debate")
             try:
                 current = self._debate_round(question, context, round_index, current, deadline=deadline)
-                transcript.append(ConsensusRound(round_index=round_index, phase="debate", positions=current))
+                self._append_round(transcript, round_index=round_index, phase="debate", positions=current)
             except _ConsensusAbort as exc:
                 return self._aborted_result(
                     current,
                     transcript,
                     reason=exc.reason,
                     rounds_completed=round_index - 1,
+                )
+            if self._token_budget_exceeded():
+                return self._aborted_result(
+                    current,
+                    transcript,
+                    reason="token_budget_exceeded",
+                    rounds_completed=round_index,
                 )
             if self._is_unanimous(current):
                 return self._unanimous_result(current, transcript, rounds=round_index)
@@ -154,9 +182,10 @@ class ConsensusEngine:
     def _initial_positions(self, question: str, context: str, *, deadline: float) -> list[AgentPosition]:
         def _run_agent(index: int) -> AgentPosition:
             agent_id = self._agent_id(index)
+            model = self._model_for(index)
             prompt = self._build_initial_prompt(question, context, agent_id)
-            raw = self.llm.complete(prompt, schema=POSITION_SCHEMA)
-            return _parse_position(raw, agent_id=agent_id, debate=False)
+            raw, tokens = self._complete(prompt, schema=POSITION_SCHEMA, model=model)
+            return _parse_position(raw, agent_id=agent_id, debate=False, model=model, tokens=tokens)
 
         return self._gather_positions(
             [(index, None) for index in range(self.agents_count)],
@@ -175,6 +204,7 @@ class ConsensusEngine:
         deadline: float,
     ) -> list[AgentPosition]:
         def _run_agent(index: int, prior: AgentPosition) -> AgentPosition:
+            model = self._model_for(index)
             prompt = self._build_debate_prompt(
                 question=question,
                 context=context,
@@ -185,8 +215,8 @@ class ConsensusEngine:
                 if self.rotate_devils_advocate
                 else False,
             )
-            raw = self.llm.complete(prompt, schema=DEBATE_SCHEMA)
-            position = _parse_position(raw, agent_id=prior.agent_id, debate=True)
+            raw, tokens = self._complete(prompt, schema=DEBATE_SCHEMA, model=model)
+            position = _parse_position(raw, agent_id=prior.agent_id, debate=True, model=model, tokens=tokens)
             self._validate_debate_update(prior, position)
             return position
 
@@ -197,18 +227,35 @@ class ConsensusEngine:
             phase=f"debate round {round_index}",
         )
 
+    def _complete(
+        self,
+        prompt: str,
+        *,
+        schema: Mapping[str, Any],
+        model: str | None,
+    ) -> tuple[Mapping[str, Any] | str, TokenUsage]:
+        if model is None:
+            raw = self.llm.complete(prompt, schema=schema)
+        else:
+            try:
+                raw = self.llm.complete(prompt, schema=schema, model=model)
+            except TypeError as exc:
+                raise ConsensusProtocolError("llm.complete must accept model= when models are configured") from exc
+        return raw, _token_usage(prompt, raw, getattr(self.llm, "last_usage", None))
+
     def _gather_positions(self, tasks, run_agent, *, deadline: float, phase: str) -> list[AgentPosition]:
         """Collect agent positions with per-agent and total deadlines.
 
         A hung or failed agent is dropped instead of blocking siblings; the
         debate continues while at least MIN_QUORUM positions survive.
+        Worker count is capped to leave CPU headroom under high fan-out.
         """
         if hasattr(self.llm, "outputs"):
             return [run_agent(index, prior) for index, prior in tasks]
 
         results: dict[int, AgentPosition] = {}
         failures: list[str] = []
-        executor = ThreadPoolExecutor(max_workers=len(tasks))
+        executor = ThreadPoolExecutor(max_workers=min(len(tasks), max(2, (os.cpu_count() or 4) - 2), MAX_AGENTS))
         try:
             futures = {executor.submit(run_agent, index, prior): index for index, prior in tasks}
             for future, index in futures.items():
@@ -228,6 +275,36 @@ class ConsensusEngine:
             detail = "; ".join(failures) or "no agent completed"
             raise _ConsensusAbort(f"quorum lost in {phase} ({len(results)}/{len(tasks)} survived): {detail}")
         return [results[index] for index in sorted(results)]
+
+    def _append_round(
+        self,
+        transcript: list[ConsensusRound],
+        *,
+        round_index: int,
+        phase: RoundPhase,
+        positions: list[AgentPosition],
+    ) -> None:
+        tokens_spent = sum(position.tokens.total_tokens for position in positions if position.tokens is not None)
+        self._tokens_spent += tokens_spent
+        self._tokens_estimated = self._tokens_estimated or any(
+            position.tokens is not None and position.tokens.estimated for position in positions
+        )
+        transcript.append(
+            ConsensusRound(
+                round_index=round_index,
+                phase=phase,
+                positions=positions,
+                tokens_spent=tokens_spent,
+            )
+        )
+
+    def _token_budget_exceeded(self) -> bool:
+        return self.budget_tokens is not None and self._tokens_spent > self.budget_tokens
+
+    def _model_for(self, index: int) -> str | None:
+        if not self.models:
+            return None
+        return self.models[index % len(self.models)]
 
     def _validate_debate_update(self, prior: AgentPosition, position: AgentPosition) -> None:
         if not position.conceded and not position.maintained:
@@ -270,6 +347,8 @@ class ConsensusEngine:
             dissent=[],
             evidence_trail=evidence,
             rounds_completed=rounds,
+            tokens_spent=self._tokens_spent,
+            tokens_estimated=self._tokens_estimated,
         )
 
     def _no_consensus_result(
@@ -317,6 +396,8 @@ class ConsensusEngine:
             points_of_disagreement=points,
             majority_stance=majority,
             rounds_completed=rounds,
+            tokens_spent=self._tokens_spent,
+            tokens_estimated=self._tokens_estimated,
         )
 
     def _aborted_result(
@@ -346,6 +427,8 @@ class ConsensusEngine:
             evidence_trail=_merge_evidence(positions),
             abort_reason=reason,
             rounds_completed=rounds_completed,
+            tokens_spent=self._tokens_spent,
+            tokens_estimated=self._tokens_estimated,
         )
 
     def _emit_progress(self, round_index: int, phase: str) -> None:
@@ -394,6 +477,83 @@ class ConsensusEngine:
         return f"agent-{index + 1}"
 
 
+def _validate_models(models: Sequence[str] | None) -> list[str]:
+    if models is None:
+        return []
+    clean: list[str] = []
+    for index, model in enumerate(models):
+        if not isinstance(model, str):
+            raise ValueError(f"models[{index}] must be a string")
+        stripped = model.strip()
+        if not stripped:
+            raise ValueError("models entries must be non-empty")
+        clean.append(stripped)
+    return clean
+
+
+def _token_usage(prompt: str, raw: Mapping[str, Any] | str, usage: object) -> TokenUsage:
+    real = _real_token_usage(usage)
+    if real is not None:
+        return real
+    real = _real_token_usage(raw.get("usage") if isinstance(raw, Mapping) else None)
+    if real is not None:
+        return real
+    input_tokens = _estimate_tokens(prompt)
+    output_tokens = _estimate_tokens(_response_text(raw))
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        estimated=True,
+    )
+
+
+def _real_token_usage(value: object) -> TokenUsage | None:
+    if not isinstance(value, Mapping):
+        return None
+    usage = value.get("usage")
+    if isinstance(usage, Mapping):
+        value = usage
+    input_tokens = _int_token(value, "input_tokens", "prompt_tokens")
+    output_tokens = _int_token(value, "output_tokens", "completion_tokens")
+    total_tokens = _int_token(value, "total_tokens", "tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    if total_tokens is None:
+        return None
+    input_tokens = input_tokens or 0
+    output_tokens = output_tokens if output_tokens is not None else max(0, total_tokens - input_tokens)
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        estimated=False,
+    )
+
+
+def _int_token(value: Mapping[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        raw = value.get(key)
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float) and raw.is_integer():
+            return int(raw)
+    return None
+
+
+def _estimate_tokens(value: str) -> int:
+    # ponytail: chars/4 estimator, replace with host-native usage when every adapter exposes it.
+    return max(1, (len(value) + 3) // 4)
+
+
+def _response_text(raw: Mapping[str, Any] | str) -> str:
+    if isinstance(raw, str):
+        return raw
+    return json.dumps(raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def normalize_stance(stance: str) -> str:
     """Normalize stance text for deterministic code-level unanimity checks."""
 
@@ -402,7 +562,14 @@ def normalize_stance(stance: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def _parse_position(raw: Mapping[str, Any] | str, *, agent_id: str, debate: bool) -> AgentPosition:
+def _parse_position(
+    raw: Mapping[str, Any] | str,
+    *,
+    agent_id: str,
+    debate: bool,
+    model: str | None = None,
+    tokens: TokenUsage | None = None,
+) -> AgentPosition:
     data = _coerce_mapping(raw, agent_id=agent_id)
     required = ("stance", "rationale", "evidence", "confidence")
     missing = [key for key in required if key not in data]
@@ -434,6 +601,8 @@ def _parse_position(raw: Mapping[str, Any] | str, *, agent_id: str, debate: bool
         confidence=confidence,
         conceded=conceded,
         maintained=maintained,
+        model=model,
+        tokens=tokens,
     )
 
 

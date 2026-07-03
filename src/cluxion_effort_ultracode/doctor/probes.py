@@ -293,9 +293,10 @@ def consensus_result_valid(ctx: DoctorContext) -> tuple[str, str]:
 
         fields = set(ConsensusResult.__dataclass_fields__)
         expected = {"status", "decision", "rationale", "rounds", "transcript", "agents_count", "dissent"}
-        if expected <= fields and {"abort_reason", "rounds_completed"} <= fields:
+        extra = {"abort_reason", "rounds_completed", "tokens_spent", "tokens_estimated"}
+        if expected <= fields and extra <= fields:
             return "pass", "result dataclass contract ok"
-        return "fail", f"missing={sorted((expected | {'abort_reason', 'rounds_completed'}) - fields)}"
+        return "fail", f"missing={sorted((expected | extra) - fields)}"
     except Exception as e:
         return "fail", f"result contract error: {e}"
 
@@ -307,7 +308,10 @@ def debate_non_termination_cost(ctx: DoctorContext) -> tuple[str, str]:
 
         calls = MAX_AGENTS * (MAX_ROUNDS + 1)
         if DEFAULT_DEBATE_BUDGET_S > 0:
-            return "pass", f"bounded by max {calls} calls and {DEFAULT_DEBATE_BUDGET_S:g}s"
+            return "pass", (
+                f"bounded by max {calls} calls and {DEFAULT_DEBATE_BUDGET_S:g}s; "
+                "token ceiling unlimited unless budget_tokens/--budget-tokens is set"
+            )
         return "fail", "non-positive debate budget"
     except Exception as e:
         return "fail", f"cost bound error: {e}"
@@ -343,7 +347,7 @@ def llm_port_complete_method_signature(ctx: DoctorContext) -> tuple[str, str]:
         from cluxion_effort_ultracode.adapters.hermes_llm import HermesSubprocessLlm
 
         signature = inspect.signature(HermesSubprocessLlm.complete)
-        if "schema" in signature.parameters:
+        if {"schema", "model"} <= set(signature.parameters):
             return "pass", str(signature)
         return "fail", str(signature)
     except Exception as e:

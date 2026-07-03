@@ -417,7 +417,7 @@
       "Hermes LLM call failed (e.g., API key invalid, model unavailable, network error)",
       "Hermes subprocess crashed (segfault, panic, Python exception)",
       "Hermes command-line args are invalid for this version",
-      "hermes -z with --model specifies non-existent or inaccessible model",
+      "hermes -z with -m specifies non-existent or inaccessible model",
       "Hermes configuration is broken (config.yaml missing or malformed)"
     ],
     "fix_steps": [
@@ -460,10 +460,10 @@
     "check_id": "llm_port_complete_method_signature",
     "category": "native_backend",
     "severity": "high",
-    "what_it_checks": "Whether LLM adapter's .complete() method has correct signature: complete(prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any] | str",
+    "what_it_checks": "Whether LLM adapter's .complete() method has correct signature: complete(prompt: str, *, schema: Mapping[str, Any] | None = None, model: str | None = None) -> Mapping[str, Any] | str",
     "failure_symptom": "TypeError or AttributeError during engine._initial_positions() or engine._debate_round() call, indicating complete() signature mismatch or LLM object missing complete method",
     "likely_causes": [
-      "Custom LLM adapter complete() method doesn't accept **kwargs (llm.complete() called with schema kwarg, but method doesn't accept it)",
+      "Custom LLM adapter complete() method doesn't accept **kwargs (llm.complete() called with schema/model kwargs, but method doesn't accept them)",
       "complete() has wrong parameter name (e.g., 'prompt_text' instead of 'prompt')",
       "complete() is not a method but an attribute (e.g., lambda function assigned to class instance)",
       "LLM object is None or not an object with .complete() method"
@@ -472,7 +472,7 @@
       "Verify LLM class has complete() method: inspect(llm.__class__).methods or hasattr(llm, 'complete')",
       "Check method signature: inspect.signature(llm.complete) should show (prompt, *, schema=None) or compatible",
       "Test calling complete directly: llm.complete('test', schema=None) should work without error",
-      "If custom adapter, ensure method signature matches LlmPort protocol: complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any] | str",
+      "If custom adapter, ensure method signature matches LlmPort protocol: complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None, model: str | None = None) -> Mapping[str, Any] | str",
       "If using HermesSubprocessLlm, verify it's instantiated correctly: HermesSubprocessLlm() or HermesSubprocessLlm(binary='hermes', timeout_seconds=120, model=None)"
     ],
     "change_robust": "Detection runs engine with actual LLM and validates method calls work. Detects signature mismatches and protocol violations at runtime.",

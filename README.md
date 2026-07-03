@@ -60,14 +60,16 @@ Hermes에서는 `cluxion_consensus` 도구로 제공됩니다. CLI로 직접 실
 ```bash
 cluxion-ultracode consensus --question "이 제안을 채택할까?" --adapter hermes
 cluxion-ultracode consensus --question "이 제안을 채택할까?" --adapter mock-unanimous
-cluxion-ultracode consensus --question "이 제안을 채택할까?" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600
+cluxion-ultracode consensus --question "이 제안을 채택할까?" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600 --budget-tokens 120000 --models cheap,strong,cheap
 ```
 
 `--adapter hermes`(기본값)는 플러그인과 동일한 `hermes -z` 경로를 사용합니다. `--adapter mock-*`는
 실제 모델 호출 없이 결정론적 로컬 테스트용입니다.
 
-최악 비용은 `agents * (rounds + 1)` 모델 호출입니다. 예를 들어 기본 3 agents, 3 rounds는 최대
-12회 호출합니다. `--agent-timeout`은 단일 agent 호출 제한이고, `--debate-budget`은 전체 토론 예산입니다.
+최악 비용은 `agents * (rounds + 1)` 모델 호출과 `tokens_spent`입니다. 예를 들어 기본 3 agents,
+3 rounds는 최대 12회 호출합니다. `--agent-timeout`은 단일 agent 호출 제한, `--debate-budget`은 전체
+토론 시간 예산, `--budget-tokens`는 전체 토큰 ceiling입니다. Hermes usage가 있으면 실제 토큰을 쓰고,
+없으면 chars/4 estimator로 `estimated: true`를 표시합니다. `--models`는 agent seat에 순환 배정됩니다.
 
 만장일치면 결정과 근거를, 아니면 반대 의견을 포함한 `no_consensus`를 반환합니다. 예산 초과나 quorum
 상실로 중단되면 `status: "aborted"`, `abort_reason`, `rounds_completed`, partial `transcript`를 반환합니다.
@@ -84,7 +86,7 @@ cluxion-ultracode doctor --json   # 구조화 출력
 
 Hermes 안에서는 `ultracode_doctor` 도구로도 노출됩니다.
 
-## 슬래시 커맨드 (0.1.12)
+## 슬래시 커맨드 (0.1.13)
 
 Codex/Claude Code 플러그인 명령:
 
@@ -166,15 +168,17 @@ In Hermes it is available as the `cluxion_consensus` tool. You can also run it f
 ```bash
 cluxion-ultracode consensus --question "Should we adopt the proposal?" --adapter hermes
 cluxion-ultracode consensus --question "Should we adopt the proposal?" --adapter mock-unanimous
-cluxion-ultracode consensus --question "Should we adopt the proposal?" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600
+cluxion-ultracode consensus --question "Should we adopt the proposal?" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600 --budget-tokens 120000 --models cheap,strong,cheap
 ```
 
 `--adapter hermes` (default) uses the same `hermes -z` path as the plugin. `--adapter mock-*` runs
 deterministic local tests without live model calls.
 
-Worst-case cost is `agents * (rounds + 1)` model calls. For example, the default 3 agents and
-3 rounds costs at most 12 calls. `--agent-timeout` caps one agent call; `--debate-budget` caps the
-whole debate.
+Worst-case cost is `agents * (rounds + 1)` model calls plus `tokens_spent`. For example, the
+default 3 agents and 3 rounds costs at most 12 calls. `--agent-timeout` caps one agent call;
+`--debate-budget` caps the whole debate time, and `--budget-tokens` caps total tokens. Token usage
+is real when Hermes reports it, otherwise chars/4 with `estimated: true`. `--models` cycles models
+across agent seats.
 
 On unanimity it returns the decision and rationale; otherwise a `no_consensus` with the dissent.
 If budget or quorum aborts the run, it returns `status: "aborted"`, `abort_reason`,
@@ -192,7 +196,7 @@ cluxion-ultracode doctor --json   # structured output
 
 Also exposed inside Hermes as the `ultracode_doctor` tool.
 
-## Slash commands (0.1.12)
+## Slash commands (0.1.13)
 
 Codex/Claude Code plugin commands:
 

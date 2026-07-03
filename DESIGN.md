@@ -45,7 +45,12 @@ The portable core imports no host SDK and knows no Hermes, Claude, Codex, OpenAI
 API. The only runtime dependency it needs is an object that satisfies:
 
 ```python
-complete(prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any] | str
+complete(
+    prompt: str,
+    *,
+    schema: Mapping[str, Any] | None = None,
+    model: str | None = None,
+) -> Mapping[str, Any] | str
 ```
 
 Adapters are intentionally translation layers. If Hermes later exposes a native structured-output
@@ -165,12 +170,13 @@ Runtime knobs:
 
 - `CLUXION_EFFORT_ULTRACODE_HERMES_BINARY`: defaults to `hermes`.
 - `CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT`: defaults to 120 seconds per call.
-- `CLUXION_EFFORT_ULTRACODE_HERMES_MODEL`: optional `--model` override for `hermes -z`.
+- `CLUXION_EFFORT_ULTRACODE_HERMES_MODEL`: optional `-m` default model for `hermes -z`.
 
 Cost note: `cluxion_consensus` is an opt-in deep-deliberation tool. Worst-case subprocess/model
 fan-out is `agents_count * (max_rounds + 1)` Hermes calls. The default `agents=3, rounds=3` can
 therefore make up to 12 `hermes -z` calls, though the engine stops early if round-0 or a debate
-round reaches unanimity.
+round reaches unanimity. Token usage is tracked per call and per round: real host usage wins when
+available, otherwise the engine marks `estimated: true` and uses chars/4.
 
 ## Broader Ultracode Porting Deferred
 
