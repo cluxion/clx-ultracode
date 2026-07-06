@@ -1,5 +1,6 @@
 ---
 description: Run Cluxion Ultracode adversarial consensus.
+disable-model-invocation: true
 ---
 
 Run on Codex hosts:

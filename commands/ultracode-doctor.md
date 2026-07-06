@@ -1,5 +1,6 @@
 ---
 description: Run Cluxion Ultracode diagnostics.
+disable-model-invocation: true
 ---
 
 Run:
