@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cluxion-agentplugin-effort-ultracode"
-version = "0.1.17"
+version = "0.1.18"
 description = "Portable multi-agent ultracode orchestration with a 3-agent adversarial debate that converges to unanimous consensus"
 readme = "README.md"
 requires-python = ">=3.11"

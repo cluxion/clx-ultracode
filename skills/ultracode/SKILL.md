@@ -1,5 +1,5 @@
 ---
-name: cluxion-ultracode
+name: ultracode
 description: Use Cluxion Ultracode when a decision needs bounded multi-agent adversarial debate, unanimous consensus, or honest no_consensus output.
 disable-model-invocation: true
 ---
