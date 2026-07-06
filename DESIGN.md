@@ -2,7 +2,7 @@
 
 ## Source Spec Mapping
 
-The authoritative source is `/Users/kimtaekyu/Downloads/rr/Ultracode-통합-마스터.md`.
+The authoritative source is the Ultracode master spec (original local design doc; not tracked in this repo).
 v0.1 implements one additive quality pattern from that spec: a 3-agent adversarial debate that
 can be layered into the broader ultracode loop. It does not replace the loop. The intended future
 shape remains:
