@@ -21,6 +21,7 @@ from cluxion_effort_ultracode.core.journal import (
     build_header,
 )
 from cluxion_effort_ultracode.core.journal_lifecycle import gc_journals
+from cluxion_effort_ultracode.core.journal_records import decode_response
 
 
 def mode(path: Path) -> int:
@@ -93,6 +94,13 @@ def test_journal_is_created_lazily_with_private_modes(tmp_path: Path) -> None:
     assert mode(journal.path) == 0o600
     records = json.loads(journal.path.read_text(encoding="utf-8").splitlines()[0])
     assert records["type"] == "header"
+
+
+def test_decode_response_degrades_gracefully_at_replay_boundary() -> None:
+    assert decode_response({"response_type": "json"}) == ""
+    assert decode_response({"response_type": "json", "response_text": "{not json"}) == "{not json"
+    assert decode_response({"response_type": "json", "response_text": '{"a": 1}'}) == {"a": 1}
+    assert decode_response({"response_type": "text", "response_text": "hi"}) == "hi"
 
 
 def test_resume_append_tightens_existing_journal_modes(tmp_path: Path) -> None:

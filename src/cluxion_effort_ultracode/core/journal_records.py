@@ -37,7 +37,12 @@ def decode_response(record: Mapping[str, Any]) -> Mapping[str, Any] | str:
     text = str(record.get("response_text", ""))
     if record.get("response_type") != "json":
         return text
-    parsed = json.loads(text)
+    if not text:
+        return text
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
     return parsed if isinstance(parsed, Mapping) else text
 
 
