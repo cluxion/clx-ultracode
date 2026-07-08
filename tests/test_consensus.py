@@ -219,6 +219,22 @@ def test_no_unanimous_consensus_records_dissent() -> None:
     assert len(result.points_of_disagreement) == 3
 
 
+def test_no_consensus_majority_stance_requires_strict_majority() -> None:
+    plurality = ConsensusEngine(
+        ScriptedLlm([position("ship"), position("ship"), position("wait"), position("rewrite")]),
+        agents_count=4,
+        max_rounds=0,
+    ).decide("Should we ship?")
+    majority = ConsensusEngine(
+        ScriptedLlm([position("ship"), position("ship"), position("ship"), position("wait")]),
+        agents_count=4,
+        max_rounds=0,
+    ).decide("Should we ship?")
+
+    assert plurality.majority_stance is None
+    assert majority.majority_stance == "ship"
+
+
 def test_conceding_requires_a_stated_reason() -> None:
     llm = ScriptedLlm(
         [

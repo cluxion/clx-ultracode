@@ -371,8 +371,8 @@ class ConsensusEngine:
             normalized_counts[normalized] += 1
             normalized_to_display.setdefault(normalized, position.stance)
 
-        most = normalized_counts.most_common(2)
-        if len(most) >= 2 and most[0][1] > most[1][1]:
+        most = normalized_counts.most_common(1)
+        if most and most[0][1] > len(positions) / 2:
             majority_normalized = most[0][0]
             majority = normalized_to_display[majority_normalized]
         else:
