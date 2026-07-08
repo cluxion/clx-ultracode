@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -138,7 +139,10 @@ def run_with_transient_retry(
             return run_once()
         except (subprocess.TimeoutExpired, OSError) as exc:
             if isinstance(exc, FileNotFoundError):
-                raise not_found_error(binary) from exc
+                if shutil.which(binary) is None:
+                    raise not_found_error(binary) from exc
+                last_transient = exc
+                break
             last_transient = exc
             if attempt == 0:
                 time.sleep(0.1)
