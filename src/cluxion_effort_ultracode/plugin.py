@@ -193,6 +193,7 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
     if not isinstance(args, Mapping):
         return {"ok": False, "error": "invalid_question", "message": "args must be an object"}
 
+    journal_info: dict[str, object] = {}
     try:
         _reject_unknown_args(args)
         resume = _text_arg(args, "resume", default="")
@@ -230,6 +231,7 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             budget_tokens=budget_tokens,
         )
         journal = DebateJournal.resume(run_id, header) if resume else DebateJournal.start(header)
+        journal_info = {"run_id": journal.run_id, "journal_path": str(journal.path)}
         llm = JournaledLlm(
             LazyLlm(lambda: _call_llm_factory(llm_factory, adapter=adapter, timeout_seconds=agent_timeout)),
             journal,
@@ -245,14 +247,15 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
         ).decide(question, context=context)
         journal.append_result(result)
     except ResumeMismatch as exc:
-        return {"ok": False, "error": "resume_mismatch", "fields": exc.fields}
+        return {"ok": False, "error": "resume_mismatch", "fields": exc.fields, **journal_info}
     except ResumeNotFound as exc:
-        return {"ok": False, "error": "journal_not_found", "run_id": str(exc)}
+        return {"ok": False, "error": "journal_not_found", "run_id": str(exc), **journal_info}
     except HermesExecutableNotFoundError as exc:
         return {
             "ok": False,
             "error": "hermes_not_found",
             "message": str(exc),
+            **journal_info,
             "hint": ("Ensure the hermes executable is on PATH, or configure CLUXION_EFFORT_ULTRACODE_HERMES_BINARY."),
         }
     except CodexExecutableNotFoundError as exc:
@@ -260,11 +263,12 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             "ok": False,
             "error": "codex_not_found",
             "message": str(exc),
+            **journal_info,
             "hint": ("Ensure the codex executable is on PATH, or configure CLUXION_EFFORT_ULTRACODE_CODEX_BINARY."),
         }
     except (ConsensusProtocolError, ValueError) as exc:
         error = type(exc).__name__ if isinstance(exc, ConsensusProtocolError) else validation_error_code(exc)
-        return {"ok": False, "error": error, "message": str(exc)}
+        return {"ok": False, "error": error, "message": str(exc), **journal_info}
     return {"ok": True, "result": asdict(result)}
 
 

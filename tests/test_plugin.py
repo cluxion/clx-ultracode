@@ -155,6 +155,19 @@ def test_consensus_handler_returns_json_string_with_scripted_llm() -> None:
     assert len(llm.calls) == 2
 
 
+def test_consensus_handler_error_includes_resumable_journal_info() -> None:
+    handler = plugin.build_consensus_handler(lambda: ScriptedLlm([position("yes"), {}]))
+
+    payload = json.loads(handler({"question": "Should we answer yes?", "rounds": 0, "agents": 2}))
+
+    journal_path = journals_dir() / f"{payload['run_id']}.jsonl"
+    assert payload["ok"] is False
+    assert payload["error"] == "ConsensusProtocolError"
+    assert payload["journal_path"] == str(journal_path)
+    assert journal_path.exists()
+    assert json.loads(journal_path.read_text(encoding="utf-8").splitlines()[0])["run_id"] == payload["run_id"]
+
+
 def test_consensus_handler_can_resume_completed_journal_without_question() -> None:
     llm = ScriptedLlm([position("yes"), position("YES.")])
     first = json.loads(plugin.build_consensus_handler(lambda: llm)({"question": "Should we answer yes?", "rounds": 0, "agents": 2}))
@@ -237,6 +250,8 @@ def test_consensus_handler_returns_honest_missing_hermes_error() -> None:
 
     assert payload["ok"] is False
     assert payload["error"] == "hermes_not_found"
+    assert payload["run_id"]
+    assert payload["journal_path"].endswith(f"{payload['run_id']}.jsonl")
     assert "PATH" in payload["hint"]
 
 
@@ -247,6 +262,8 @@ def test_consensus_handler_returns_honest_missing_codex_error() -> None:
 
     assert payload["ok"] is False
     assert payload["error"] == "codex_not_found"
+    assert payload["run_id"]
+    assert payload["journal_path"].endswith(f"{payload['run_id']}.jsonl")
     assert "PATH" in payload["hint"]
 
 
