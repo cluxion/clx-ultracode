@@ -214,9 +214,7 @@ class ConsensusEngine:
                 round_index=round_index,
                 agent_id=prior.agent_id,
                 positions=previous,
-                devil_advocate=index == ((round_index - 1) % len(previous))
-                if self.rotate_devils_advocate
-                else False,
+                devil_advocate=index == ((round_index - 1) % len(previous)) if self.rotate_devils_advocate else False,
             )
             raw, tokens = self._complete(prompt, schema=DEBATE_SCHEMA, model=model)
             position = _parse_position(raw, agent_id=prior.agent_id, debate=True, model=model, tokens=tokens)
@@ -249,9 +247,11 @@ class ConsensusEngine:
     def _gather_positions(self, tasks, run_agent, *, deadline: float, phase: str) -> list[AgentPosition]:
         """Collect agent positions with per-agent and total deadlines.
 
-        A hung or failed agent is dropped instead of blocking siblings; the
-        debate continues while at least MIN_QUORUM positions survive.
-        Worker count is capped to leave CPU headroom under high fan-out.
+        Journaled CLI/plugin runs are serialized to preserve replay order; in that
+        (production) mode an adapter timeout or completion error ABORTS the current
+        invocation — it is not dropped-and-continued. Only the non-journaled parallel
+        path drops a hung/failed agent and continues while at least MIN_QUORUM
+        positions survive (worker count is capped to leave CPU headroom under high fan-out).
         """
         if hasattr(self.llm, "outputs") or getattr(self.llm, "serial_complete", False):
             return [run_agent(index, prior) for index, prior in tasks]

@@ -37,7 +37,9 @@ Worst-case cost: `agents * (rounds + 1)` model calls plus `tokens_spent`. Token 
 the backend reports usage, otherwise `estimated: true` via chars/4. Every result includes `run_id` and
 `journal_path`; resume replays matching calls into `tokens_replayed` and only live suffix calls
 consume `tokens_spent`/`--budget-tokens`. Completed journals can be replayed for deterministic
-debugging. Validation errors use `invalid_question`, `invalid_models`, `invalid_agents`,
+debugging. Journaled runs do NOT drop timed-out agents: a timeout or completion failure aborts the
+invocation; `--resume` replays the recorded prefix and retries the unrecorded failed call, which may
+be billed again. Timeout-drop + `MIN_QUORUM` continuation apply only to the non-journaled parallel path. Validation errors use `invalid_question`, `invalid_models`, `invalid_agents`,
 `invalid_rounds`, `invalid_budget`, or `invalid_timeout`; missing journals on resume return
 `journal_not_found`.
 

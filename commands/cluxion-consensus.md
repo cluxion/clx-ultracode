@@ -29,8 +29,10 @@ cluxion-ultracode journals gc --older-than-days 7 --apply
 ```
 
 Worst-case cost: `agents * (rounds + 1)` model calls plus `tokens_spent`. Token usage is real when
-the backend reports usage, otherwise `estimated: true` via chars/4. Budget/quorum aborts return JSON
-with `status: "aborted"` and a partial transcript. Every result includes `run_id` and `journal_path`;
+the backend reports usage, otherwise `estimated: true` via chars/4. Budget aborts (and parallel-path
+quorum loss) return JSON with `status: "aborted"` and a partial transcript. In JOURNALED runs an agent
+timeout/completion failure aborts the invocation instead (no graceful quorum-drop); `--resume` replays
+the recorded prefix and retries the unrecorded failed call, which may be billed again. Every result includes `run_id` and `journal_path`;
 resume replays matching recorded calls into `tokens_replayed` and only live suffix calls consume
 `tokens_spent`/`--budget-tokens`. Completed journals can be replayed for deterministic debugging.
 Validation errors use `invalid_question`, `invalid_models`, `invalid_agents`, `invalid_rounds`,

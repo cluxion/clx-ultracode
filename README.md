@@ -75,6 +75,12 @@ cluxion-ultracode consensus --question "이 제안을 채택할까?" --rounds 3 
 없으면 chars/4 estimator로 `estimated: true`를 표시합니다. 긴 질문은 `--question-file PATH` 또는
 `--question -`(stdin)로 전달할 수 있습니다. `--models`는 agent seat에 순환 배정됩니다.
 
+저널이 활성화된 CLI/plugin 실행은 replay 순서를 보존하기 위해 agent 호출을 직렬화합니다. agent가 멈추거나
+timeout/완료 오류를 내면 현재 실행이 중단되며 quorum에서 제외하고 계속하지 않습니다. 기록된 성공 prefix가
+있으면 `--resume <run_id>`가 이를 재과금 없이 replay한 뒤 기록되지 않은 실패 호출부터 다시 시도합니다(다시
+과금될 수 있음). 첫 호출이 실패하면 journal이 아직 없으므로 새 run이 필요합니다. Timeout drop과 `MIN_QUORUM`
+지속은 비저널 병렬 core 경로에만 적용됩니다.
+
 만장일치면 결정과 근거를, 아니면 반대 의견을 포함한 `no_consensus`를 반환합니다. 예산 초과나 quorum
 상실로 중단되면 `status: "aborted"`, `abort_reason`, `rounds_completed`, partial `transcript`를 반환합니다.
 검증 실패는 `invalid_question`, `invalid_models`, `invalid_agents`, `invalid_rounds`, `invalid_budget`,
@@ -192,6 +198,13 @@ default 3 agents and 3 rounds costs at most 12 calls. `--agent-timeout` caps one
 is real when the backend reports it, otherwise chars/4 with `estimated: true`. Long questions can be
 passed with `--question-file PATH` or `--question -` (stdin). `--models` cycles models across agent
 seats.
+
+Journaled runs (CLI/plugin) serialize agent calls to preserve replay order. If an agent hangs or
+returns a timeout/completion error, the current invocation ABORTS — it is not dropped-and-continued.
+`--resume <run_id>` replays the recorded successful prefix without re-billing, then retries from the
+first unrecorded (failed) call, which may be billed again; if the first call fails there is no journal
+yet, so start a fresh run. Timeout-drop and `MIN_QUORUM` continuation apply only to the non-journaled
+parallel core path.
 
 On unanimity it returns the decision and rationale; otherwise a `no_consensus` with the dissent.
 If budget or quorum aborts the run, it returns `status: "aborted"`, `abort_reason`,
