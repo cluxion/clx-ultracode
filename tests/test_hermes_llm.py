@@ -42,6 +42,18 @@ class TimeoutThenExitProcess(FakeProcess):
         return "", ""
 
 
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0, 10**400])
+def test_hermes_constructor_rejects_non_finite_or_non_positive_timeout(timeout: float | int) -> None:
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        HermesSubprocessLlm(timeout_seconds=timeout)
+
+
+def test_hermes_constructor_accepts_positive_finite_timeout() -> None:
+    llm = HermesSubprocessLlm(timeout_seconds=12.5)
+    assert llm.timeout_seconds == 12.5
+    assert HermesSubprocessLlm(timeout_seconds=12).timeout_seconds == 12.0
+
+
 def test_structured_complete_parses_json_from_subprocess_stdout() -> None:
     llm = HermesSubprocessLlm(timeout_seconds=12)
 

@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any
 
+from cluxion_effort_ultracode.core.errors import require_positive_finite
 from cluxion_effort_ultracode.core.ports import LlmPort
 from cluxion_effort_ultracode.core.types import (
     AgentPosition,
@@ -110,10 +111,8 @@ class ConsensusEngine:
         self.agents_count = agents_count
         self.max_rounds = max_rounds
         self.rotate_devils_advocate = rotate_devils_advocate
-        if agent_timeout_s <= 0:
-            raise ValueError("agent_timeout_s must be positive")
-        if debate_budget_s <= 0:
-            raise ValueError("debate_budget_s must be positive")
+        agent_timeout_s = require_positive_finite(agent_timeout_s, "agent_timeout_s")
+        debate_budget_s = require_positive_finite(debate_budget_s, "debate_budget_s")
         if budget_tokens is not None and budget_tokens <= 0:
             raise ValueError("budget_tokens must be positive")
         clean_models = _validate_models(models)

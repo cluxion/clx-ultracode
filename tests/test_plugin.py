@@ -230,7 +230,17 @@ def test_consensus_handler_rejects_empty_question(question: str) -> None:
         ({"question": "Q?", "agents": 1}, "invalid_agents"),
         ({"question": "Q?", "rounds": 99}, "invalid_rounds"),
         ({"question": "Q?", "agent_timeout": 0}, "invalid_timeout"),
+        ({"question": "Q?", "agent_timeout": -1}, "invalid_timeout"),
+        ({"question": "Q?", "agent_timeout": float("nan")}, "invalid_timeout"),
+        ({"question": "Q?", "agent_timeout": float("inf")}, "invalid_timeout"),
+        ({"question": "Q?", "agent_timeout": float("-inf")}, "invalid_timeout"),
+        ({"question": "Q?", "agent_timeout": 10**400}, "invalid_timeout"),
         ({"question": "Q?", "debate_budget": 0}, "invalid_budget"),
+        ({"question": "Q?", "debate_budget": -1}, "invalid_budget"),
+        ({"question": "Q?", "debate_budget": float("nan")}, "invalid_budget"),
+        ({"question": "Q?", "debate_budget": float("inf")}, "invalid_budget"),
+        ({"question": "Q?", "debate_budget": float("-inf")}, "invalid_budget"),
+        ({"question": "Q?", "debate_budget": 10**400}, "invalid_budget"),
         ({"question": "Q?", "budget_tokens": 0}, "invalid_budget"),
     ],
 )
@@ -241,6 +251,10 @@ def test_consensus_handler_validation_errors_use_semantic_codes(args: dict[str, 
 
     assert payload["ok"] is False
     assert payload["error"] == code
+    # timeout/budget bounds are rejected before journal creation
+    if code in {"invalid_timeout", "invalid_budget"}:
+        assert "run_id" not in payload
+        assert not journals_dir().exists()
 
 
 def test_consensus_handler_returns_honest_missing_hermes_error() -> None:

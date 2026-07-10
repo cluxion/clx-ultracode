@@ -6,10 +6,11 @@ import os
 
 from cluxion_effort_ultracode.adapters.codex_llm import CodexSubprocessLlm
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesSubprocessLlm
+from cluxion_effort_ultracode.core.errors import require_positive_finite
 
 
 def default_llm(adapter: str = "hermes", *, timeout_seconds: float | None = None) -> HermesSubprocessLlm | CodexSubprocessLlm:
-    timeout = timeout_from_env() if timeout_seconds is None else _validate_timeout(timeout_seconds)
+    timeout = timeout_from_env() if timeout_seconds is None else require_positive_finite(timeout_seconds, "timeout_seconds")
     if adapter == "hermes":
         binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", "hermes")
         model = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_MODEL") or None
@@ -27,15 +28,9 @@ def timeout_from_env() -> float:
         return 120.0
     try:
         timeout = float(raw)
-    except ValueError as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT must be numeric") from exc
-    return _validate_timeout(timeout, env_name="CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT")
-
-
-def _validate_timeout(timeout: float, *, env_name: str = "timeout_seconds") -> float:
-    if timeout <= 0:
-        raise ValueError(f"{env_name} must be greater than zero")
-    return timeout
+    return require_positive_finite(timeout, "CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT")
 
 
 __all__ = ["default_llm", "timeout_from_env"]

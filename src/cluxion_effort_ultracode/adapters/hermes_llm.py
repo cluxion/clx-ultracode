@@ -15,6 +15,7 @@ from cluxion_effort_ultracode.adapters.subprocess_common import (
     truncate,
 )
 from cluxion_effort_ultracode.core import ConsensusProtocolError
+from cluxion_effort_ultracode.core.errors import require_positive_finite
 
 
 class HermesExecutableNotFoundError(RuntimeError):
@@ -33,10 +34,8 @@ class HermesSubprocessLlm:
     ) -> None:
         if not binary.strip():
             raise ValueError("binary must not be empty")
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be greater than zero")
         self.binary = binary
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = require_positive_finite(timeout_seconds, "timeout_seconds")
         self.model = model.strip() if model else None
         self._local = threading.local()
 

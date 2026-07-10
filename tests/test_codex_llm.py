@@ -22,6 +22,18 @@ def _fake_codex(path: Path, body: str) -> Path:
     return path
 
 
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0, 10**400])
+def test_codex_constructor_rejects_non_finite_or_non_positive_timeout(timeout: float | int) -> None:
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        CodexSubprocessLlm(timeout_seconds=timeout)
+
+
+def test_codex_constructor_accepts_positive_finite_timeout() -> None:
+    llm = CodexSubprocessLlm(timeout_seconds=12.5)
+    assert llm.timeout_seconds == 12.5
+    assert CodexSubprocessLlm(timeout_seconds=12).timeout_seconds == 12.0
+
+
 def test_structured_complete_reads_output_last_message_not_stdout_noise(tmp_path: Path) -> None:
     calls_file = tmp_path / "calls.jsonl"
     fake = _fake_codex(

@@ -103,3 +103,19 @@ def test_invalid_timeouts_rejected() -> None:
         ConsensusEngine(llm, debate_budget_s=-1)
     with pytest.raises(ValueError):
         ConsensusEngine(llm, budget_tokens=0)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0, 10**400])
+def test_engine_rejects_non_finite_or_non_positive_timeout_budget(value: float | int) -> None:
+    llm = ScriptedLlm([])
+    with pytest.raises(ValueError, match="agent_timeout_s"):
+        ConsensusEngine(llm, agent_timeout_s=value)
+    with pytest.raises(ValueError, match="debate_budget_s"):
+        ConsensusEngine(llm, debate_budget_s=value)
+
+
+def test_engine_accepts_positive_int_and_float_timeout_budget() -> None:
+    llm = ScriptedLlm([])
+    engine = ConsensusEngine(llm, agent_timeout_s=12, debate_budget_s=30.5)
+    assert engine.agent_timeout_s == 12.0
+    assert engine.debate_budget_s == 30.5

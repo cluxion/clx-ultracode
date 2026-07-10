@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 
 def validation_error_code(exc: BaseException) -> str:
     message = str(exc)
@@ -19,3 +21,20 @@ def validation_error_code(exc: BaseException) -> str:
     if "question" in lower or lower.startswith("unknown arguments"):
         return "invalid_question"
     return type(exc).__name__
+
+
+def require_positive_finite(value: object, field: str) -> float:
+    """Coerce int/float to a positive finite float.
+
+    Accepts only int or float (not bool or str). Catches TypeError, ValueError,
+    and OverflowError from float conversion. Rejects non-finite values and <= 0.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a number")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} must be positive") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{field} must be positive")
+    return number

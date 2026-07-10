@@ -13,7 +13,7 @@ import pytest
 
 from cluxion_effort_ultracode.adapters.codex_llm import CodexExecutableNotFoundError
 from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError
-from cluxion_effort_ultracode.cli import main
+from cluxion_effort_ultracode.cli import _prepare_consensus, main
 from cluxion_effort_ultracode.core.journal import journals_dir
 
 
@@ -259,7 +259,15 @@ def test_consensus_cli_rejects_empty_question(capsys, question: str):
     [
         (["--rounds", "99"], "invalid_rounds"),
         (["--agent-timeout", "0"], "invalid_timeout"),
+        (["--agent-timeout", "-1"], "invalid_timeout"),
+        (["--agent-timeout", "nan"], "invalid_timeout"),
+        (["--agent-timeout", "inf"], "invalid_timeout"),
+        (["--agent-timeout=-inf"], "invalid_timeout"),
         (["--debate-budget", "0"], "invalid_budget"),
+        (["--debate-budget", "-1"], "invalid_budget"),
+        (["--debate-budget", "nan"], "invalid_budget"),
+        (["--debate-budget", "inf"], "invalid_budget"),
+        (["--debate-budget=-inf"], "invalid_budget"),
         (["--budget-tokens", "0"], "invalid_budget"),
     ],
 )
@@ -270,6 +278,33 @@ def test_consensus_cli_validation_errors_use_semantic_codes(capsys, argv: list[s
     assert exit_code == 1
     assert payload["ok"] is False
     assert payload["error"] == code
+    assert "run_id" not in payload
+    assert not journals_dir().exists()
+
+
+def test_prepare_consensus_rejects_huge_int_timeout_without_overflow() -> None:
+    namespace = type(
+        "NS",
+        (),
+        {
+            "resume": None,
+            "question": "Adopt?",
+            "question_file": None,
+            "context": "",
+            "rounds": 0,
+            "agents": 2,
+            "agent_timeout": 10**400,
+            "debate_budget": 30.0,
+            "budget_tokens": None,
+            "models": None,
+            "adapter": "mock-unanimous",
+        },
+    )()
+
+    with pytest.raises(ValueError, match="agent_timeout") as caught:
+        _prepare_consensus(namespace)
+    assert not isinstance(caught.value, OverflowError)
+    assert not journals_dir().exists()
 
 
 def test_consensus_cli_reads_question_from_stdin(capsys, monkeypatch):

@@ -300,6 +300,34 @@ def _mock_healthy_hermes_run(cmd):
     return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
 
+def test_doctor_run_cache_is_per_context_not_process_global() -> None:
+    """Same callable identity+argv across contexts must not share stale results."""
+    responses = [
+        subprocess.CompletedProcess(args=["probe"], returncode=0, stdout="first", stderr=""),
+        subprocess.CompletedProcess(args=["probe"], returncode=1, stdout="second", stderr=""),
+    ]
+    calls = 0
+
+    def shared_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        result = responses[calls]
+        calls += 1
+        return result
+
+    ctx_a = DoctorContext(Path.cwd(), "hermes", shared_run)
+    first = ctx_a.run_cached(["probe"])
+    cached = ctx_a.run_cached(["probe"])
+    assert first.stdout == "first"
+    assert cached.stdout == "first"
+    assert calls == 1
+
+    ctx_b = DoctorContext(Path.cwd(), "hermes", shared_run)
+    second = ctx_b.run_cached(["probe"])
+    assert second.stdout == "second"
+    assert second.returncode == 1
+    assert calls == 2
+
+
 def test_doctor_run_memoizes_duplicate_commands(monkeypatch):
     monkeypatch.setattr(
         "cluxion_effort_ultracode.doctor.framework.shutil.which",

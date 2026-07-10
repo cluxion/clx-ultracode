@@ -18,7 +18,7 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
-from cluxion_effort_ultracode.core.errors import validation_error_code
+from cluxion_effort_ultracode.core.errors import require_positive_finite, validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
     JournaledLlm,
@@ -204,17 +204,17 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
         context = _text_arg(args, "context", default=str((saved or {}).get("context", "")))
         rounds = _int_arg(args, "rounds", default=int((saved or {}).get("max_rounds", 3)))
         agents = _int_arg(args, "agents", default=int((saved or {}).get("agents_count", 3)))
-        agent_timeout = _float_arg(
-            args,
-            "agent_timeout",
-            default=float((saved or {}).get("agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S)),
+        agent_timeout = require_positive_finite(
+            args.get("agent_timeout", (saved or {}).get("agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S)),
+            "agent_timeout_s",
         )
-        debate_budget = _float_arg(
-            args,
-            "debate_budget",
-            default=float((saved or {}).get("debate_budget_s", DEFAULT_DEBATE_BUDGET_S)),
+        debate_budget = require_positive_finite(
+            args.get("debate_budget", (saved or {}).get("debate_budget_s", DEFAULT_DEBATE_BUDGET_S)),
+            "debate_budget_s",
         )
         budget_tokens = _optional_int_arg(args, "budget_tokens", default=(saved or {}).get("budget_tokens"))
+        if budget_tokens is not None and budget_tokens <= 0:
+            raise ValueError("budget_tokens must be positive")
         models = _models_arg(args, "models") if "models" in args else _saved_models(saved)
         adapter = _adapter_arg(args, saved)
         run_id = resume or new_run_id()
@@ -320,16 +320,6 @@ def _int_arg(args: Mapping[str, object], key: str, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{key} must be an integer") from exc
-
-
-def _float_arg(args: Mapping[str, object], key: str, *, default: float) -> float:
-    value = args.get(key, default)
-    if isinstance(value, bool):
-        raise ValueError(f"{key} must be numeric")
-    try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{key} must be numeric") from exc
 
 
 def _optional_int_arg(args: Mapping[str, object], key: str, *, default: object = None) -> int | None:

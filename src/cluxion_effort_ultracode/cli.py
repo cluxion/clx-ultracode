@@ -24,7 +24,7 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
-from cluxion_effort_ultracode.core.errors import validation_error_code
+from cluxion_effort_ultracode.core.errors import require_positive_finite, validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
     JournaledLlm,
@@ -238,12 +238,15 @@ def _prepare_consensus(namespace: argparse.Namespace) -> _ConsensusConfig:
     context = namespace.context if namespace.context is not None else str((saved or {}).get("context", ""))
     rounds = int(_saved_or(namespace.rounds, saved, "max_rounds", 3))
     agents = _bounded_int(_saved_or(namespace.agents, saved, "agents_count", 3), "agents_count", 2, MAX_AGENTS)
-    agent_timeout = float(_saved_or(namespace.agent_timeout, saved, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S))
-    debate_budget = float(_saved_or(namespace.debate_budget, saved, "debate_budget_s", DEFAULT_DEBATE_BUDGET_S))
     budget_tokens = _optional_int(_saved_or(namespace.budget_tokens, saved, "budget_tokens", None))
+    agent_timeout, debate_budget = _validate_pre_journal(
+        rounds,
+        _saved_or(namespace.agent_timeout, saved, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S),
+        _saved_or(namespace.debate_budget, saved, "debate_budget_s", DEFAULT_DEBATE_BUDGET_S),
+        budget_tokens,
+    )
     models = _parse_models(namespace.models) if namespace.models is not None else _saved_models(saved)
     adapter = namespace.adapter or str((saved or {}).get("adapter") or "hermes")
-    _validate_pre_journal(rounds, agent_timeout, debate_budget, budget_tokens)
     run_id = namespace.resume or new_run_id()
     header = build_header(
         run_id=run_id,
@@ -327,20 +330,19 @@ def _bounded_int(value: object, name: str, minimum: int, maximum: int) -> int:
 
 def _validate_pre_journal(
     rounds: int,
-    agent_timeout: float,
-    debate_budget: float,
+    agent_timeout: object,
+    debate_budget: object,
     budget_tokens: int | None,
-) -> None:
+) -> tuple[float, float]:
     if rounds < 0:
         raise ValueError("max_rounds must be non-negative")
     if rounds > MAX_ROUNDS:
         raise ValueError(f"max_rounds must be <= {MAX_ROUNDS}")
-    if agent_timeout <= 0:
-        raise ValueError("agent_timeout_s must be positive")
-    if debate_budget <= 0:
-        raise ValueError("debate_budget_s must be positive")
+    timeout = require_positive_finite(agent_timeout, "agent_timeout_s")
+    budget = require_positive_finite(debate_budget, "debate_budget_s")
     if budget_tokens is not None and budget_tokens <= 0:
         raise ValueError("budget_tokens must be positive")
+    return timeout, budget
 
 
 def _saved_models(saved: Mapping[str, object] | None) -> list[str] | None:
