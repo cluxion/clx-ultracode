@@ -156,17 +156,18 @@ def test_hermes_z_flag_support_parses_help(monkeypatch):
     )
 
     def _help_run(cmd):
+        assert cmd[-2:] == ["ultracode-llm", "--help"] or cmd[1:] == ["ultracode-llm", "--help"]
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout="usage: hermes [-z] [--oneshot PROMPT]",
+            stdout="usage: hermes ultracode-llm",
             stderr="",
         )
 
     ctx = DoctorContext(Path.cwd(), "hermes", _help_run)
     status, detail = PROBES["hermes_z_flag_support"](ctx)
     assert status == "pass"
-    assert detail == "present"
+    assert "ultracode-llm" in detail
 
 
 def test_codex_exec_flag_support_parses_help(monkeypatch):
@@ -288,11 +289,18 @@ def _mock_healthy_hermes_run(cmd):
             stdout="Hermes Agent v0.1.7",
             stderr="",
         )
+    if len(cmd) >= 3 and cmd[1] == "ultracode-llm" and cmd[2] == "--help":
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="usage: hermes ultracode-llm\nHidden-purpose cluxion ultracode LLM bridge",
+            stderr="",
+        )
     if "--help" in cmd:
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout="usage: hermes [-z] [--oneshot PROMPT]",
+            stdout="usage: hermes",
             stderr="",
         )
     if len(cmd) >= 2 and cmd[1] == "tools":
@@ -358,11 +366,13 @@ def test_doctor_run_memoizes_duplicate_commands(monkeypatch):
 
     hermes_version_calls = [cmd for cmd in invocations if cmd[0] == "hermes" and cmd[-1] == "--version"]
     codex_version_calls = [cmd for cmd in invocations if cmd[0] == "codex" and cmd[-1] == "--version"]
-    hermes_help_calls = [cmd for cmd in invocations if cmd[0] == "hermes" and cmd[-1] == "--help"]
+    hermes_bridge_help_calls = [
+        cmd for cmd in invocations if cmd[0] == "hermes" and cmd[1:] == ["ultracode-llm", "--help"]
+    ]
     codex_help_calls = [cmd for cmd in invocations if cmd[0] == "codex" and cmd[-1] == "--help"]
     assert len(hermes_version_calls) == 1
     assert len(codex_version_calls) == 1
-    assert len(hermes_help_calls) == 1
+    assert len(hermes_bridge_help_calls) == 1
     assert len(codex_help_calls) == 1
 
 

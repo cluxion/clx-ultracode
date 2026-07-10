@@ -295,6 +295,67 @@ def test_callable_adapter_parses_structured_json_text() -> None:
     assert result.decision == "Adopt"
 
 
+def test_confidence_overflow_maps_to_finite_number_error() -> None:
+    with pytest.raises(ConsensusProtocolError, match="confidence must be a finite number"):
+        consensus_module._parse_position(
+            {"stance": "A", "rationale": "R", "evidence": ["E"], "confidence": 10**400},
+            agent_id="agent-1",
+            debate=False,
+        )
+
+
+def test_confidence_json_1e999_maps_to_finite_number_error() -> None:
+    with pytest.raises(ConsensusProtocolError, match="confidence must be a finite number"):
+        consensus_module._parse_position(
+            {"stance": "A", "rationale": "R", "evidence": ["E"], "confidence": float("1e999")},
+            agent_id="agent-1",
+            debate=False,
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_confidence_nan_inf_map_to_finite_number_error(value: float) -> None:
+    with pytest.raises(ConsensusProtocolError, match="confidence must be a finite number"):
+        consensus_module._parse_position(
+            {"stance": "A", "rationale": "R", "evidence": ["E"], "confidence": value},
+            agent_id="agent-1",
+            debate=False,
+        )
+
+
+def test_confidence_non_numeric_keeps_must_be_numeric_message() -> None:
+    with pytest.raises(ConsensusProtocolError, match="confidence must be numeric"):
+        consensus_module._parse_position(
+            {"stance": "A", "rationale": "R", "evidence": ["E"], "confidence": "high"},
+            agent_id="agent-1",
+            debate=False,
+        )
+
+
+def test_confidence_finite_out_of_range_is_preserved() -> None:
+    position = consensus_module._parse_position(
+        {"stance": "A", "rationale": "R", "evidence": ["E"], "confidence": 1.5},
+        agent_id="agent-1",
+        debate=False,
+    )
+    assert position.confidence == 1.5
+    position = consensus_module._parse_position(
+        {"stance": "A", "rationale": "R", "evidence": ["E"], "confidence": -0.25},
+        agent_id="agent-1",
+        debate=False,
+    )
+    assert position.confidence == -0.25
+
+
+def test_confidence_ordinary_finite_values() -> None:
+    position = consensus_module._parse_position(
+        {"stance": "A", "rationale": "R", "evidence": ["E"], "confidence": 0.75},
+        agent_id="agent-1",
+        debate=False,
+    )
+    assert position.confidence == 0.75
+
+
 def _agent_id_from_prompt(prompt: str) -> str:
     for line in prompt.splitlines():
         if line.startswith("Agent: "):

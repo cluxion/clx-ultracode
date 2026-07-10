@@ -21,6 +21,7 @@ from typing import Any
 from cluxion_effort_ultracode.core import ConsensusProtocolError
 
 _KILL_DRAIN_TIMEOUT_SECONDS = 0.5
+_TERM_POLL_TIMEOUT_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,8 @@ def run_process(
             stderr=subprocess.PIPE,
             stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="strict",
             cwd=str(cwd) if cwd is not None else None,
             start_new_session=True,
         )
@@ -252,18 +255,24 @@ def _token_int(value: Mapping[str, Any], *keys: str) -> int | None:
 
 
 _live_processes: set[int] = set()
-_live_processes_lock = threading.Lock()
+_live_processes_lock = threading.RLock()
+_atexit_registered = False
 _signal_hooks_installed = False
+_signal_cleanup_active = False
 
 
 def _register_child(pid: int) -> None:
-    global _signal_hooks_installed
+    global _atexit_registered, _signal_hooks_installed
     with _live_processes_lock:
         _live_processes.add(pid)
-        if _signal_hooks_installed:
-            return
-        _signal_hooks_installed = True
-    atexit.register(_reap_live_processes)
+        if not _atexit_registered:
+            atexit.register(_reap_live_processes)
+            _atexit_registered = True
+        already_installed = _signal_hooks_installed
+    if already_installed:
+        return
+
+    handlers_installed = 0
     for signum in (signal.SIGINT, signal.SIGTERM):
         previous = signal.getsignal(signum)
 
@@ -271,12 +280,21 @@ def _register_child(pid: int) -> None:
             _reap_live_processes()
             if callable(_previous):
                 _previous(signo, frame)
+            elif _previous == signal.SIG_IGN:
+                return
             else:
                 signal.signal(signo, signal.SIG_DFL)
                 os.kill(os.getpid(), signo)
 
-        with contextlib.suppress(ValueError, OSError):
+        try:
             signal.signal(signum, _handler)
+            handlers_installed += 1
+        except (ValueError, OSError):
+            continue
+
+    if handlers_installed:
+        with _live_processes_lock:
+            _signal_hooks_installed = True
 
 
 def _unregister_child(pid: int) -> None:
@@ -285,14 +303,81 @@ def _unregister_child(pid: int) -> None:
 
 
 def _reap_live_processes() -> None:
+    global _signal_cleanup_active
     with _live_processes_lock:
-        pids = sorted(_live_processes)
-        _live_processes.clear()
-    for pid in pids:
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            continue
+        if _signal_cleanup_active:
+            return
+        _signal_cleanup_active = True
+        snapshot = set(_live_processes)
+    try:
+        if not snapshot:
+            return
+        for pid in snapshot:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGTERM)
+
+        term_deadline = time.monotonic() + _TERM_POLL_TIMEOUT_SECONDS
+        survivors = set(snapshot)
+        while survivors and time.monotonic() < term_deadline:
+            survivors = {pid for pid in survivors if _process_group_alive(pid)}
+            if not survivors:
+                break
+            time.sleep(0.01)
+        survivors = {pid for pid in survivors if _process_group_alive(pid)}
+
+        for pid in survivors:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pid, signal.SIGKILL)
+
+        drain_deadline = time.monotonic() + _KILL_DRAIN_TIMEOUT_SECONDS
+        pending = set(snapshot)
+        while pending and time.monotonic() < drain_deadline:
+            for pid in list(pending):
+                reaped = False
+                try:
+                    waited, _status = os.waitpid(pid, os.WNOHANG)
+                    if waited == pid:
+                        reaped = True
+                except ChildProcessError:
+                    reaped = True
+                except ProcessLookupError:
+                    reaped = True
+                except OSError:
+                    reaped = not _pid_alive(pid)
+                if reaped or not _pid_alive(pid):
+                    pending.discard(pid)
+            if pending:
+                time.sleep(0.01)
+
+        with _live_processes_lock:
+            _live_processes.difference_update(snapshot)
+    finally:
+        with _live_processes_lock:
+            _signal_cleanup_active = False
+
+
+def _process_group_alive(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return _pid_alive(pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 
 def _termination_grace(timeout_seconds: float) -> float:

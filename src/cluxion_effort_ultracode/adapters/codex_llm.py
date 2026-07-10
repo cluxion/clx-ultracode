@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import threading
 from collections.abc import Mapping
@@ -78,6 +79,8 @@ class CodexSubprocessLlm:
     ) -> Mapping[str, Any] | str:
         """Return raw Codex final output or a parsed JSON object for structured calls."""
 
+        self._local.last_usage = None
+        self._local.usage_unknown = False
         return complete_with_optional_schema(
             prompt,
             schema=schema,
@@ -87,8 +90,16 @@ class CodexSubprocessLlm:
         )
 
     def _run_exec(self, prompt: str, schema: Mapping[str, Any] | None, model: str | None) -> str:
+        def run_once() -> str:
+            try:
+                return self._run_exec_once(prompt, schema=schema, model=model)
+            except (subprocess.TimeoutExpired, OSError):
+                self._local.usage_unknown = True
+                self._local.last_usage = None
+                raise
+
         return run_with_transient_retry(
-            lambda: self._run_exec_once(prompt, schema=schema, model=model),
+            run_once,
             label="codex exec",
             binary=self.binary,
             timeout_seconds=self.timeout_seconds,
@@ -98,7 +109,6 @@ class CodexSubprocessLlm:
         )
 
     def _run_exec_once(self, prompt: str, *, schema: Mapping[str, Any] | None, model: str | None) -> str:
-        self._local.last_usage = None
         with tempfile.TemporaryDirectory(prefix="cluxion-codex-") as tmp:
             workdir = Path(tmp)
             output_path = workdir / "last-message.txt"
@@ -126,7 +136,10 @@ class CodexSubprocessLlm:
                 raise ConsensusProtocolError("codex exec did not write --output-last-message") from exc
             if not message:
                 raise ConsensusProtocolError("codex exec produced empty final message")
-            self._local.last_usage = extract_usage(stdout, stderr)
+            usage = extract_usage(stdout, stderr)
+            if usage is None:
+                self._local.usage_unknown = True
+            self._local.last_usage = None if self._local.usage_unknown else _sum_usage(self.last_usage, usage)
             return message
 
     def _command(
@@ -160,6 +173,24 @@ class CodexSubprocessLlm:
             command.extend(["--output-schema", str(schema_path)])
         command.append("-")
         return command
+
+
+def _sum_usage(
+    left: Mapping[str, int | bool] | None,
+    right: Mapping[str, int | bool],
+) -> Mapping[str, int | bool]:
+    if left is None:
+        return dict(right)
+    merged: dict[str, int | bool] = dict(left)
+    for key, value in right.items():
+        if key == "estimated":
+            merged[key] = bool(left.get(key)) or bool(value)
+        elif isinstance(value, int) and not isinstance(value, bool):
+            current = merged.get(key)
+            merged[key] = (current if isinstance(current, int) and not isinstance(current, bool) else 0) + value
+        elif key not in merged:
+            merged[key] = value
+    return merged
 
 
 __all__ = ["CodexExecutableNotFoundError", "CodexSubprocessLlm"]

@@ -211,3 +211,25 @@ def test_journals_gc_respects_cutoff_and_dry_run(tmp_path: Path) -> None:
     assert [item["run_id"] for item in applied["candidates"]] == ["old123"]
     assert not (directory / "old123.jsonl").exists()
     assert (directory / "new123.jsonl").exists()
+
+
+def test_journals_gc_rejects_huge_older_than_days_before_mutation(tmp_path: Path) -> None:
+    directory = tmp_path / "journals"
+    directory.mkdir()
+    path = directory / "keep123.jsonl"
+    path.write_text(json.dumps(header("keep123")) + "\n", encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="older_than_days"):
+        gc_journals(home=tmp_path, older_than_days=10**20, apply=True)
+
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_journals_gc_rejects_datetime_cutoff_overflow_before_filesystem_access(tmp_path: Path) -> None:
+    home = tmp_path / "must-not-be-created"
+
+    with pytest.raises(ValueError, match="older_than_days"):
+        gc_journals(home=home, older_than_days=999_999_999, apply=True)
+
+    assert not home.exists()

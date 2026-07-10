@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import importlib.resources
+import inspect
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from cluxion_effort_ultracode.adapters.codex_llm import CodexExecutableNotFoundError
-from cluxion_effort_ultracode.adapters.hermes_llm import HermesExecutableNotFoundError
+from cluxion_effort_ultracode.adapters.hermes_llm import (
+    BRIDGE_CLI_NAME,
+    HermesExecutableNotFoundError,
+    HermesHostLlm,
+    HermesLlmError,
+    handle_ultracode_llm_cli,
+    setup_ultracode_llm_cli,
+)
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
 from cluxion_effort_ultracode.core.consensus import (
     DEFAULT_AGENT_TIMEOUT_S,
@@ -31,7 +40,7 @@ from cluxion_effort_ultracode.core.journal import (
 )
 from cluxion_effort_ultracode.core.ports import LlmPort
 from cluxion_effort_ultracode.doctor import render_json, run_doctor
-from cluxion_effort_ultracode.llm_factory import default_llm
+from cluxion_effort_ultracode.llm_factory import default_llm, timeout_from_env
 
 CONSENSUS_ARG_KEYS = {
     "question",
@@ -50,7 +59,7 @@ CONSENSUS_SCHEMA: dict[str, Any] = {
     "name": "cluxion_consensus",
     "description": (
         "Run an opt-in deep-deliberation consensus debate through Hermes or Codex. "
-        "Worst-case cost is agents * (rounds + 1) model calls, plus tracked tokens."
+        "Fan-out is agents * (rounds + 1) logical adapter calls; structured repair can add provider calls."
     ),
     "parameters": {
         "type": "object",
@@ -120,36 +129,35 @@ CONSENSUS_SCHEMA: dict[str, Any] = {
 
 
 def register(ctx: object) -> None:
-    """Register the cluxion_consensus tool with a Hermes-like host context."""
+    """Register tool, slash, and CLI bridge capabilities independently when present."""
+
+    host_factory = _host_llm_factory(ctx)
 
     register_tool = getattr(ctx, "register_tool", None)
-    if not callable(register_tool):
-        return
-
-    register_tool(
-        name="cluxion_consensus",
-        toolset="ultracode",
-        schema=CONSENSUS_SCHEMA,
-        handler=build_consensus_handler(),
-        emoji="🧠",
-    )
-    # doctor tool
-    DOCTOR_SCHEMA = {
-        "name": "ultracode_doctor",
-        "description": "Run the embedded deterministic health checks for this plugin",
-        "parameters": {
-            "type": "object",
-            "properties": {"verbose": {"type": "boolean"}},
-            "additionalProperties": False,
-        },
-    }
-    register_tool(
-        name="ultracode_doctor",
-        toolset="ultracode",
-        schema=DOCTOR_SCHEMA,
-        handler=lambda args, **kw: _json_result(lambda: _handle_doctor(args, **kw)),
-        emoji="🩺",
-    )
+    if callable(register_tool):
+        register_tool(
+            name="cluxion_consensus",
+            toolset="ultracode",
+            schema=CONSENSUS_SCHEMA,
+            handler=build_consensus_handler(host_factory),
+            emoji="🧠",
+        )
+        doctor_schema = {
+            "name": "ultracode_doctor",
+            "description": "Run the embedded deterministic health checks for this plugin",
+            "parameters": {
+                "type": "object",
+                "properties": {"verbose": {"type": "boolean"}},
+                "additionalProperties": False,
+            },
+        }
+        register_tool(
+            name="ultracode_doctor",
+            toolset="ultracode",
+            schema=doctor_schema,
+            handler=lambda args, **kw: _json_result(lambda: _handle_doctor(args, **kw)),
+            emoji="🩺",
+        )
 
     register_command = getattr(ctx, "register_command", None)
     if callable(register_command):
@@ -158,8 +166,12 @@ def register(ctx: object) -> None:
             question = raw_args.strip()
             if not question:
                 return "Usage: /cluxion-consensus <question|--resume run_id>"
-            args = {"resume": question.split(maxsplit=1)[1]} if question.startswith("--resume ") else {"question": question}
-            payload = _handle_consensus(args, llm_factory=_default_llm)
+            args = (
+                {"resume": question.split(maxsplit=1)[1]}
+                if question.startswith("--resume ")
+                else {"question": question}
+            )
+            payload = _handle_consensus(args, llm_factory=host_factory)
             return json.dumps(payload, ensure_ascii=False, indent=2)
 
         def _slash_ultracode_doctor(raw_args: str) -> str:
@@ -176,6 +188,19 @@ def register(ctx: object) -> None:
             "ultracode-doctor",
             _slash_ultracode_doctor,
             description="Run ultracode plugin doctor checks",
+        )
+
+    register_cli = getattr(ctx, "register_cli_command", None)
+    if callable(register_cli):
+
+        def _handler_fn(args: object) -> int:
+            return handle_ultracode_llm_cli(lambda: _lazy_ctx_llm(ctx), args)
+
+        register_cli(
+            name=BRIDGE_CLI_NAME,
+            help="Hidden-purpose cluxion ultracode LLM bridge (stdin JSON request v1)",
+            setup_fn=setup_ultracode_llm_cli,
+            handler_fn=_handler_fn,
         )
 
 
@@ -250,6 +275,8 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
         return {"ok": False, "error": "resume_mismatch", "fields": exc.fields, **journal_info}
     except ResumeNotFound as exc:
         return {"ok": False, "error": "journal_not_found", "run_id": str(exc), **journal_info}
+    except HermesLlmError as exc:
+        return {"ok": False, "error": exc.code, "message": exc.message, **journal_info}
     except HermesExecutableNotFoundError as exc:
         return {
             "ok": False,
@@ -276,10 +303,58 @@ def _default_llm(adapter: str = "hermes", *, timeout_seconds: float | None = Non
     return default_llm(adapter, timeout_seconds=timeout_seconds)
 
 
+def _host_llm_factory(ctx: object):
+    """Factory that uses host ctx.llm for hermes and Codex adapter for codex."""
+
+    def factory(adapter: str = "hermes", *, timeout_seconds: float | None = None) -> LlmPort:
+        timeout = (
+            timeout_from_env()
+            if timeout_seconds is None
+            else require_positive_finite(timeout_seconds, "timeout_seconds")
+        )
+        if adapter == "hermes":
+            model = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_MODEL") or None
+            return HermesHostLlm(lambda: _lazy_ctx_llm(ctx), timeout_seconds=timeout, model=model)
+        if adapter == "codex":
+            return default_llm("codex", timeout_seconds=timeout)
+        raise ValueError(f"unknown adapter: {adapter}")
+
+    return factory
+
+
+def _lazy_ctx_llm(ctx: object) -> object:
+    llm = getattr(ctx, "llm", None)
+    if llm is None:
+        raise HermesLlmError(
+            "hermes_bridge_unavailable",
+            "host ctx.llm is unavailable; cannot serve hermes adapter without the plugin LLM surface",
+        )
+    return llm
+
+
 def _call_llm_factory(llm_factory: object, *, adapter: str, timeout_seconds: float) -> LlmPort:
     if not callable(llm_factory):
         raise ValueError("llm_factory must be callable")
-    llm = llm_factory(adapter, timeout_seconds=timeout_seconds) if llm_factory is _default_llm else llm_factory()
+    call_with_contract = True
+    try:
+        signature = inspect.signature(llm_factory)
+    except (TypeError, ValueError):
+        signature = None
+    if signature is not None:
+        try:
+            signature.bind(adapter, timeout_seconds=timeout_seconds)
+        except TypeError:
+            try:
+                signature.bind()
+            except TypeError as exc:
+                raise ValueError(
+                    "llm_factory must accept (adapter, *, timeout_seconds=...) or the legacy zero-argument contract"
+                ) from exc
+            call_with_contract = False
+    try:
+        llm = llm_factory(adapter, timeout_seconds=timeout_seconds) if call_with_contract else llm_factory()
+    except TypeError as exc:
+        raise ValueError("llm_factory raised TypeError") from exc
     complete = getattr(llm, "complete", None)
     if not callable(complete):
         raise ValueError("llm_factory must return an object with complete(...)")
@@ -318,7 +393,7 @@ def _int_arg(args: Mapping[str, object], key: str, *, default: int) -> int:
         raise ValueError(f"{key} must be an integer")
     try:
         return int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{key} must be an integer") from exc
 
 
@@ -330,7 +405,7 @@ def _optional_int_arg(args: Mapping[str, object], key: str, *, default: object =
         raise ValueError(f"{key} must be an integer")
     try:
         return int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{key} must be an integer") from exc
 
 

@@ -9,8 +9,12 @@ from cluxion_effort_ultracode.adapters.hermes_llm import HermesSubprocessLlm
 from cluxion_effort_ultracode.core.errors import require_positive_finite
 
 
-def default_llm(adapter: str = "hermes", *, timeout_seconds: float | None = None) -> HermesSubprocessLlm | CodexSubprocessLlm:
-    timeout = timeout_from_env() if timeout_seconds is None else require_positive_finite(timeout_seconds, "timeout_seconds")
+def default_llm(
+    adapter: str = "hermes", *, timeout_seconds: float | None = None
+) -> HermesSubprocessLlm | CodexSubprocessLlm:
+    timeout = (
+        timeout_from_env() if timeout_seconds is None else require_positive_finite(timeout_seconds, "timeout_seconds")
+    )
     if adapter == "hermes":
         binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", "hermes")
         model = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_MODEL") or None

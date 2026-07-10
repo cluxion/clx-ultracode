@@ -111,16 +111,26 @@ def hermes_version(ctx: DoctorContext) -> tuple[str, str]:
         return "fail", f"run error: {e}"
 
 
-@_register("hermes_oneshot_flag")
-def hermes_oneshot_flag(ctx: DoctorContext) -> tuple[str, str]:
+def _hermes_bridge_help(ctx: DoctorContext) -> tuple[str, str]:
+    """Token-free bridge capability probe: hermes ultracode-llm --help."""
+    binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", ctx.hermes_bin)
+    if ctx.which(binary) is None:
+        return "skip", "hermes binary not on PATH — cannot verify"
     try:
-        cp = ctx.run_cached([ctx.hermes_bin, "--help"])
-        out = cp.stdout + cp.stderr
-        if "-z" in out and "--oneshot" in out:
-            return "pass", "present"
-        return "fail", "missing in --help"
+        cp = ctx.run_cached([binary, "ultracode-llm", "--help"])
+        if cp.returncode == 0:
+            return "pass", "ultracode-llm bridge help ok"
+        detail = (cp.stdout or cp.stderr or f"exit {cp.returncode}").strip()
+        return "fail", detail or "ultracode-llm --help failed"
     except Exception as e:
         return "fail", f"run error: {e}"
+
+
+@_register("hermes_oneshot_flag")
+def hermes_oneshot_flag(ctx: DoctorContext) -> tuple[str, str]:
+    # Historical migration note: check_id kept; formerly probed host oneshot flags.
+    # Active contract is only `hermes ultracode-llm --help` (token-free).
+    return _hermes_bridge_help(ctx)
 
 
 @_register("hermes_subprocess_launchable")
@@ -129,7 +139,7 @@ def hermes_subprocess_launchable(ctx: DoctorContext) -> tuple[str, str]:
     if ctx.which(binary) is None:
         return "skip", "hermes binary not on PATH — cannot verify"
     try:
-        cp = ctx.run_cached([ctx.hermes_bin, "--version"])
+        cp = ctx.run_cached([binary, "--version"])
         if cp.returncode == 0:
             return "pass", cp.stdout.strip() or "launched"
         detail = cp.stdout.strip() or cp.stderr.strip() or f"exit {cp.returncode}"
@@ -140,17 +150,9 @@ def hermes_subprocess_launchable(ctx: DoctorContext) -> tuple[str, str]:
 
 @_register("hermes_z_flag_support")
 def hermes_z_flag_support(ctx: DoctorContext) -> tuple[str, str]:
-    binary = os.getenv("CLUXION_EFFORT_ULTRACODE_HERMES_BINARY", ctx.hermes_bin)
-    if ctx.which(binary) is None:
-        return "skip", "hermes binary not on PATH — cannot verify"
-    try:
-        cp = ctx.run_cached([ctx.hermes_bin, "--help"])
-        out = cp.stdout + cp.stderr
-        if "-z" in out and "--oneshot" in out:
-            return "pass", "present"
-        return "fail", "missing in --help"
-    except Exception as e:
-        return "fail", f"run error: {e}"
+    # Historical migration note: check_id kept; formerly probed host -z flags.
+    # Active contract is only `hermes ultracode-llm --help` (token-free).
+    return _hermes_bridge_help(ctx)
 
 
 @_register("entry_point_registered")
@@ -276,7 +278,11 @@ def llm_factory_callable(ctx: DoctorContext) -> tuple[str, str]:
             def complete(self, prompt: str, *, schema: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
                 return {"stance": "Yes", "rationale": "stub", "evidence": ["e"], "confidence": 0.9}
 
-        _call_llm_factory(lambda: _StubLlm(), adapter="hermes", timeout_seconds=120)
+        def _factory(adapter: str, *, timeout_seconds: float) -> _StubLlm:
+            del adapter, timeout_seconds
+            return _StubLlm()
+
+        _call_llm_factory(_factory, adapter="hermes", timeout_seconds=120)
         if not callable(default_llm):
             return "fail", "default_llm is not callable"
         llm = default_llm()
@@ -389,8 +395,8 @@ def hermes_subprocess_returncode_nonzero(ctx: DoctorContext) -> tuple[str, str]:
     try:
         from cluxion_effort_ultracode.adapters.hermes_llm import HermesSubprocessLlm
 
-        if callable(getattr(HermesSubprocessLlm, "_run_oneshot_once", None)):
-            return "pass", "nonzero returncode classified by adapter"
+        if callable(getattr(HermesSubprocessLlm, "_run_bridge_once", None)):
+            return "pass", "nonzero returncode classified by bridge client"
         return "fail", "adapter runner missing"
     except Exception as e:
         return "fail", f"adapter error: {e}"

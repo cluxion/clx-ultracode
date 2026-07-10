@@ -18,6 +18,7 @@ SEVERITY_RANK: dict[str, int] = {
     "info": 4,
 }
 
+
 @dataclass(frozen=True)
 class CatalogEntry:
     check_id: str

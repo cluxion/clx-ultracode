@@ -27,6 +27,19 @@ plugins:
 ```
 
 Hermes를 통해 제공되는 로컬 모델(vLLM/MLX)에서도 동일하게 동작합니다.
+`--models` 또는 `CLUXION_EFFORT_ULTRACODE_HERMES_MODEL`로 기본 모델과 다른 모델을 지정할
+때만 Hermes의 명시적 신뢰 설정이 필요합니다.
+자동으로 활성화하지 말고, 허용할 모델만 설정하세요.
+
+```yaml
+plugins:
+  entries:
+    cluxion-agentplugin-effort-ultracode:
+      llm:
+        allow_model_override: true
+        allowed_models:
+          - provider/model-id
+```
 
 ### Codex CLI에서 사용
 
@@ -65,12 +78,14 @@ cluxion-ultracode consensus --question-file ./decision.txt --adapter hermes
 cluxion-ultracode consensus --question "이 제안을 채택할까?" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600 --budget-tokens 120000 --models cheap,strong,cheap
 ```
 
-`--adapter hermes`(기본값)는 기존 호환성을 위해 `hermes -z` 경로를 사용합니다. Codex CLI host에서는
-`--adapter codex`가 권장 backend이며 `codex exec`의 `--output-last-message`로 최종 응답을 캡처합니다.
+`--adapter hermes`(기본값)는 Hermes host의 `ctx.llm` 표면(플러그인 내부) 또는 독립 실행 시
+`hermes ultracode-llm` stdin/stdout 브릿지를 사용합니다. Codex CLI host에서는 `--adapter codex`가
+권장 backend이며 `codex exec`의 `--output-last-message`로 최종 응답을 캡처합니다.
 `--adapter mock-*`는 실제 모델 호출 없이 결정론적 로컬 테스트용입니다.
 
-최악 비용은 `agents * (rounds + 1)` 모델 호출과 `tokens_spent`입니다. 예를 들어 기본 3 agents,
-3 rounds는 최대 12회 호출합니다. `--agent-timeout`은 단일 agent 호출 제한, `--debate-budget`은 전체
+최대 fan-out은 `agents * (rounds + 1)` 논리 agent/adapter 호출입니다. 예를 들어 기본 3 agents,
+3 rounds는 최대 12회 논리 호출입니다. Hermes structured 출력의 첫 응답이 잘못되면 논리 호출마다
+provider JSON-repair 호출이 최대 1회 추가될 수 있습니다. `--agent-timeout`은 단일 agent 호출 제한, `--debate-budget`은 전체
 토론 시간 예산, `--budget-tokens`는 전체 토큰 ceiling입니다. Backend usage가 있으면 실제 토큰을 쓰고,
 없으면 chars/4 estimator로 `estimated: true`를 표시합니다. 긴 질문은 `--question-file PATH` 또는
 `--question -`(stdin)로 전달할 수 있습니다. `--models`는 agent seat에 순환 배정됩니다.
@@ -149,6 +164,18 @@ plugins:
 ```
 
 It works the same with local models (vLLM/MLX) served through Hermes.
+Only explicit `--models` or `CLUXION_EFFORT_ULTRACODE_HERMES_MODEL` overrides need Hermes trust
+configuration. Do not enable it implicitly; allow only the models you intend to use:
+
+```yaml
+plugins:
+  entries:
+    cluxion-agentplugin-effort-ultracode:
+      llm:
+        allow_model_override: true
+        allowed_models:
+          - provider/model-id
+```
 
 ### Use with Codex CLI
 
@@ -187,13 +214,14 @@ cluxion-ultracode consensus --question-file ./decision.txt --adapter hermes
 cluxion-ultracode consensus --question "Should we adopt the proposal?" --rounds 3 --agents 3 --agent-timeout 180 --debate-budget 600 --budget-tokens 120000 --models cheap,strong,cheap
 ```
 
-`--adapter hermes` (default) keeps backward compatibility with the `hermes -z` path. On Codex CLI
-hosts, `--adapter codex` is the recommended backend and captures the final answer through
-`codex exec --output-last-message`. `--adapter mock-*` runs deterministic local tests without live
-model calls.
+`--adapter hermes` (default) uses the host `ctx.llm` surface inside Hermes, or the standalone
+`hermes ultracode-llm` stdin/stdout bridge outside the host. On Codex CLI hosts, `--adapter codex`
+is the recommended backend and captures the final answer through `codex exec --output-last-message`.
+`--adapter mock-*` runs deterministic local tests without live model calls.
 
-Worst-case cost is `agents * (rounds + 1)` model calls plus `tokens_spent`. For example, the
-default 3 agents and 3 rounds costs at most 12 calls. `--agent-timeout` caps one agent call;
+Maximum fan-out is `agents * (rounds + 1)` logical agent/adapter calls. For example, the
+default 3 agents and 3 rounds make at most 12 logical calls. If the first Hermes structured
+response is malformed, each logical call can add at most one provider JSON-repair call. `--agent-timeout` caps one agent call;
 `--debate-budget` caps the whole debate time, and `--budget-tokens` caps total tokens. Token usage
 is real when the backend reports it, otherwise chars/4 with `estimated: true`. Long questions can be
 passed with `--question-file PATH` or `--question -` (stdin). `--models` cycles models across agent

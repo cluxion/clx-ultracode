@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -609,6 +610,10 @@ def _parse_position(
         confidence = float(data["confidence"])
     except (TypeError, ValueError) as exc:
         raise ConsensusProtocolError(f"{agent_id} confidence must be numeric") from exc
+    except OverflowError as exc:
+        raise ConsensusProtocolError(f"{agent_id} confidence must be a finite number") from exc
+    if not math.isfinite(confidence):
+        raise ConsensusProtocolError(f"{agent_id} confidence must be a finite number")
 
     conceded = _parse_debate_points(data.get("conceded", []), agent_id=agent_id, field_name="conceded")
     maintained = _parse_debate_points(data.get("maintained", []), agent_id=agent_id, field_name="maintained")

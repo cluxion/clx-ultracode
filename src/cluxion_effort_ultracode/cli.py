@@ -16,6 +16,7 @@ from cluxion_effort_ultracode.adapters import (
     CallableLlmAdapter,
     CodexExecutableNotFoundError,
     HermesExecutableNotFoundError,
+    HermesLlmError,
 )
 from cluxion_effort_ultracode.core import ConsensusEngine, ConsensusProtocolError
 from cluxion_effort_ultracode.core.consensus import (
@@ -100,7 +101,7 @@ def _build_parser() -> argparse.ArgumentParser:
     consensus = subparsers.add_parser(
         "consensus",
         help="Run an adversarial unanimous-consensus debate",
-        description="Worst-case model cost: agents * (rounds + 1) calls, with tracked tokens_spent.",
+        description=("Fan-out: agents * (rounds + 1) logical adapter calls; structured repair can add provider calls."),
     )
     consensus.add_argument("--question", help="Decision, proposal, or question to decide; use '-' to read stdin")
     consensus.add_argument("--question-file", help="Read the decision question from a UTF-8 text file")
@@ -132,7 +133,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["hermes", "codex", "mock-unanimous", "mock-no-consensus"],
         default=None,
         help=(
-            "LLM adapter: hermes runs real hermes -z, codex runs codex exec; "
+            "LLM adapter: hermes uses the host ultracode-llm bridge, codex runs codex exec; "
             "mock-* adapters are deterministic for local testing."
         ),
     )
@@ -173,9 +174,7 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
             debate_budget_s=config.debate_budget,
             budget_tokens=config.budget_tokens,
             models=config.models,
-            progress_callback=lambda round_index, phase: print(
-                f"round {round_index} {phase} start", file=sys.stderr
-            ),
+            progress_callback=lambda round_index, phase: print(f"round {round_index} {phase} start", file=sys.stderr),
         )
         result = engine.decide(config.question, context=config.context)
         config.journal.append_result(result)
@@ -184,6 +183,14 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
         return 1
     except ResumeNotFound as exc:
         print(json.dumps({"ok": False, "error": "journal_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        return 1
+    except HermesLlmError as exc:
+        print(
+            json.dumps(
+                {"ok": False, "error": exc.code, "message": exc.message, **journal_info},
+                ensure_ascii=False,
+            )
+        )
         return 1
     except HermesExecutableNotFoundError as exc:
         print(
@@ -194,8 +201,7 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
                     "message": str(exc),
                     **journal_info,
                     "hint": (
-                        "Ensure the hermes executable is on PATH, or configure "
-                        "CLUXION_EFFORT_ULTRACODE_HERMES_BINARY."
+                        "Ensure the hermes executable is on PATH, or configure CLUXION_EFFORT_ULTRACODE_HERMES_BINARY."
                     ),
                 },
                 ensure_ascii=False,
@@ -211,8 +217,7 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
                     "message": str(exc),
                     **journal_info,
                     "hint": (
-                        "Ensure the codex executable is on PATH, or configure "
-                        "CLUXION_EFFORT_ULTRACODE_CODEX_BINARY."
+                        "Ensure the codex executable is on PATH, or configure CLUXION_EFFORT_ULTRACODE_CODEX_BINARY."
                     ),
                 },
                 ensure_ascii=False,

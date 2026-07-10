@@ -37,8 +37,8 @@ The package follows the Part 2 dependency-inversion requirement:
 - `src/cluxion_effort_ultracode/core/consensus.py` contains the deterministic algorithm.
 - `src/cluxion_effort_ultracode/adapters/callable_llm.py` is a reference adapter for tests and
   plain Python use.
-- `src/cluxion_effort_ultracode/adapters/hermes_llm.py` calls the active Hermes model through
-  `hermes -z` and adapts stdout into the `LlmPort` contract.
+- `src/cluxion_effort_ultracode/adapters/hermes_llm.py` uses the host plugin LLM surface
+  (`ctx.llm`) in-process, or the standalone `hermes ultracode-llm` stdin/stdout bridge.
 - `src/cluxion_effort_ultracode/plugin.py` is a thin Hermes-facing shim.
 
 The portable core imports no host SDK and knows no Hermes, Claude, Codex, OpenAI, or workflow host
@@ -123,13 +123,14 @@ The CLI entry point is:
 cluxion-ultracode consensus --question "..." --adapter mock-unanimous
 ```
 
-v0.1 ships only deterministic mock adapters at the CLI boundary:
+The CLI boundary supports the real `hermes` and `codex` adapters plus deterministic test adapters:
 
 - `mock-unanimous`
 - `mock-no-consensus`
 
-This keeps tests and local smoke runs network-free. The Hermes plugin path uses
-`HermesSubprocessLlm`; other hosts can add adapters by implementing the `LlmPort` contract.
+The mock adapters keep tests and local smoke runs network-free. Inside Hermes, the plugin injects
+`HermesHostLlm` over `ctx.llm`; standalone `--adapter hermes` uses `HermesSubprocessLlm`. Other
+hosts can add adapters by implementing the `LlmPort` contract.
 
 ## Hermes Shim
 
@@ -155,28 +156,37 @@ The handler accepts `(args: dict, **kwargs)` and returns a JSON string:
 - success: `{"ok": true, "result": {...}}`
 - failure: `{"ok": false, "error": "...", "message": "..."}`
 
-For real LLM work, the handler builds `HermesSubprocessLlm`, which runs the official one-shot CLI:
+For real LLM work on a Hermes host, the registered tool/slash command injects `HermesHostLlm`,
+a duck-typed adapter over the host's lazy `ctx.llm.complete(messages=..., model=..., timeout=...,
+purpose="cluxion-ultracode")` surface. It must not spawn a nested full Hermes agent. Standalone
+CLI `adapter=hermes` uses `HermesSubprocessLlm`, which launches exactly:
 
 ```bash
-hermes -z "<prompt>"
+hermes ultracode-llm
 ```
 
-Structured calls append a strict instruction asking for one JSON object matching the requested
-schema, parse stdout, strip simple Markdown code fences, and retry once with a stricter instruction
-if JSON parsing fails. If the configured Hermes binary is missing, the handler returns
-`ok:false` with a PATH/configuration hint.
+with one UTF-8 JSON request on stdin (`v`, `prompt`, `schema`, `model`, `timeout_s`) and a single
+stdout envelope line (`marker="cluxion-ultracode-llm"`, `v=1`, `ok`, `output`/`error`, `usage`,
+`provider`, `model`). Prompt and schema never appear on argv. The bridge process owns optional-schema
+structured prompting plus one JSON repair retry, so one logical `complete()` is one external process.
+`hermes ultracode-llm --help` is token-free (setup_fn only configures argparse). Explicit model
+overrides require `plugins.entries.cluxion-agentplugin-effort-ultracode.llm.allow_model_override`
+and, when restricted, `allowed_models`; the plugin never enables this trust itself. A denied
+override is a typed `model_override_denied` error with no silent substitution. Codex selection
+remains `CodexSubprocessLlm`.
 
 Runtime knobs:
 
 - `CLUXION_EFFORT_ULTRACODE_HERMES_BINARY`: defaults to `hermes`.
 - `CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT`: defaults to 120 seconds per call.
-- `CLUXION_EFFORT_ULTRACODE_HERMES_MODEL`: optional `-m` default model for `hermes -z`.
+- `CLUXION_EFFORT_ULTRACODE_HERMES_MODEL`: optional default model for host/bridge requests (requires host trust when overriding).
 
-Cost note: `cluxion_consensus` is an opt-in deep-deliberation tool. Worst-case subprocess/model
-fan-out is `agents_count * (max_rounds + 1)` Hermes calls. The default `agents=3, rounds=3` can
-therefore make up to 12 `hermes -z` calls, though the engine stops early if round-0 or a debate
-round reaches unanimity. Token usage is tracked per call and per round: real host usage wins when
-available, otherwise the engine marks `estimated: true` and uses chars/4.
+Cost note: `cluxion_consensus` is an opt-in deep-deliberation tool. Maximum logical fan-out is
+`agents_count * (max_rounds + 1)` agent/adapter calls. The default `agents=3, rounds=3` can therefore
+make up to 12 logical calls, though the engine stops early if round-0 or a debate round reaches
+unanimity. A malformed first Hermes structured response can add at most one provider repair call
+per logical call. Token usage is tracked per logical call and per round: aggregated real host usage
+wins when complete, otherwise the engine marks `estimated: true` and uses chars/4.
 
 ## Broader Ultracode Porting Deferred
 

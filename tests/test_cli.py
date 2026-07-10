@@ -446,9 +446,30 @@ def test_consensus_help_documents_cost_formula(capsys):
     assert "codex" in out
 
 
+def test_journals_gc_huge_days_returns_structured_error(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    directory = journals_dir()
+    directory.mkdir(parents=True)
+    path = directory / "stay.jsonl"
+    path.write_text(
+        json.dumps({"type": "header", "run_id": "stay", "created_at": "2020-01-01T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_text(encoding="utf-8")
+
+    assert main(["journals", "gc", "--older-than-days", str(10**20), "--apply"]) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert "older_than_days" in payload["message"]
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert path.read_text(encoding="utf-8") == before
+
+
 @pytest.mark.skipif(
     os.getenv("CLUXION_EFFORT_ULTRACODE_LIVE") != "1",
-    reason="set CLUXION_EFFORT_ULTRACODE_LIVE=1 to run real hermes -z consensus via CLI",
+    reason="set CLUXION_EFFORT_ULTRACODE_LIVE=1 to run real hermes ultracode-llm consensus via CLI",
 )
 def test_consensus_hermes_adapter_live_smoke():
     exit_code = main(

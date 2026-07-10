@@ -28,6 +28,8 @@ def test_root_plugin_artifacts_are_version_synced() -> None:
 def test_no_root_adapter_forks_or_fictional_codex_snippets() -> None:
     assert not Path("adapters").exists()
     assert not Path("adapters/codex/config-snippet.toml").exists()
+
+
 def test_marketplace_manifest_is_version_synced() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     version = pyproject["project"]["version"]

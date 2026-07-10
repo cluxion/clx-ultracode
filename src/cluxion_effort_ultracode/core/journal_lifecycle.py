@@ -21,8 +21,12 @@ def list_journals(*, home: Path | None = None) -> dict[str, object]:
 
 
 def gc_journals(*, older_than_days: int = 7, apply: bool = False, home: Path | None = None) -> dict[str, object]:
+    try:
+        age = timedelta(days=older_than_days)
+        cutoff = datetime.now(UTC) - age
+    except OverflowError as exc:
+        raise ValueError("older_than_days is outside the supported datetime range") from exc
     directory = journals_dir(home)
-    cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
     candidates = []
     for path in sorted(directory.glob("*.jsonl")) if directory.exists() else []:
         summary = _summary(path)

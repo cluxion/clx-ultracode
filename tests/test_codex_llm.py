@@ -103,13 +103,14 @@ def test_structured_complete_retries_once_after_malformed_json(tmp_path: Path) -
         tmp_path / "codex",
         textwrap.dedent(
             f"""
-            import pathlib, sys
+            import json, pathlib, sys
             args = sys.argv[1:]
             count_path = pathlib.Path({str(count_file)!r})
             count = int(count_path.read_text(encoding="utf-8") or "0") if count_path.exists() else 0
             count_path.write_text(str(count + 1), encoding="utf-8")
             output = "not json" if count == 0 else '{{"stance":"Adopt"}}'
             pathlib.Path(args[args.index("--output-last-message") + 1]).write_text(output, encoding="utf-8")
+            print(json.dumps({{"usage": {{"total_tokens": 3 if count == 0 else 5}}}}))
             """
         ),
     )
@@ -117,6 +118,32 @@ def test_structured_complete_retries_once_after_malformed_json(tmp_path: Path) -
 
     assert llm.complete("Prompt", schema={"type": "object"}) == {"stance": "Adopt"}
     assert count_file.read_text(encoding="utf-8") == "2"
+    assert llm.last_usage is not None
+    assert llm.last_usage["total_tokens"] == 8
+
+
+def test_structured_repair_with_unknown_attempt_keeps_usage_unknown(tmp_path: Path) -> None:
+    count_file = tmp_path / "count"
+    fake = _fake_codex(
+        tmp_path / "codex",
+        textwrap.dedent(
+            f"""
+            import json, pathlib, sys
+            args = sys.argv[1:]
+            count_path = pathlib.Path({str(count_file)!r})
+            count = int(count_path.read_text(encoding="utf-8") or "0") if count_path.exists() else 0
+            count_path.write_text(str(count + 1), encoding="utf-8")
+            output = "not json" if count == 0 else '{{"stance":"Adopt"}}'
+            pathlib.Path(args[args.index("--output-last-message") + 1]).write_text(output, encoding="utf-8")
+            if count == 1:
+                print(json.dumps({{"usage": {{"total_tokens": 5}}}}))
+            """
+        ),
+    )
+    llm = CodexSubprocessLlm(binary=str(fake))
+
+    assert llm.complete("Prompt", schema={"type": "object"}) == {"stance": "Adopt"}
+    assert llm.last_usage is None
 
 
 def test_missing_codex_binary_raises_honest_error() -> None:
@@ -178,4 +205,3 @@ def test_sigterm_reaps_codex_process_group(tmp_path: Path) -> None:
     finally:
         if parent.poll() is None:
             parent.kill()
-

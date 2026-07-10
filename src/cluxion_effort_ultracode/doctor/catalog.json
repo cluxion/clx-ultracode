@@ -132,17 +132,20 @@
     "check_id": "hermes_oneshot_flag",
     "category": "hermes_contract",
     "severity": "critical",
-    "what_it_checks": "host advertises -z/--oneshot (the non-interactive entry every plugin relies on)",
-    "failure_symptom": "Plugin/CLI falls into interactive mode or errors when invoking the host",
+    "what_it_checks": "host exposes the token-free ultracode-llm CLI bridge (plugin-registered hidden-purpose command)",
+    "failure_symptom": "Standalone hermes adapter cannot launch the bridge; CLI/plugin returns hermes_bridge_unavailable",
     "likely_causes": [
-      "A Hermes update renamed/removed the oneshot flag"
+      "Plugin not loaded so ultracode-llm was never registered",
+      "Hermes host lacks register_cli_command support",
+      "An old Hermes install without the plugin bridge"
     ],
     "fix_steps": [
-      "Run: hermes --help | grep -- -z",
-      "If absent, pin to a compatible Hermes version or update the plugin to the new flag"
+      "Run: hermes ultracode-llm --help (must exit 0 with zero model/token calls)",
+      "Ensure this plugin is enabled and reloaded on the Hermes host",
+      "Reinstall/update cluxion-agentplugin-effort-ultracode if the subcommand is missing"
     ],
-    "change_robust": "Greps live --help output each run — detects a Hermes update that breaks the contract",
-    "detection_method": "'-z' and '--oneshot' present in `hermes --help`"
+    "change_robust": "Probes live `hermes ultracode-llm --help` each run — token-free and detects missing bridge registration",
+    "detection_method": "`hermes ultracode-llm --help` exits 0"
   },
   {
     "check_id": "entry_point_registered",
@@ -225,8 +228,8 @@
     "check_id": "hermes_subprocess_launchable",
     "category": "native_backend",
     "severity": "critical",
-    "what_it_checks": "Whether hermes -z subprocess can be launched and does not crash immediately (permission, shebang, corrupted binary)",
-    "failure_symptom": "HermesExecutableNotFoundError or ConsensusProtocolError with 'hermes -z failed to start: [OSError details]' during plugin handler execution",
+    "what_it_checks": "Whether the configured hermes binary can be launched and does not crash immediately (permission, shebang, corrupted binary)",
+    "failure_symptom": "HermesExecutableNotFoundError or hermes_bridge_unavailable during standalone adapter execution",
     "likely_causes": [
       "hermes binary has wrong permissions (not executable)",
       "hermes script has broken shebang or encoding issues",
@@ -250,24 +253,22 @@
     "check_id": "hermes_z_flag_support",
     "category": "hermes_contract",
     "severity": "critical",
-    "what_it_checks": "Whether hermes binary supports the -z oneshot prompt flag (not an older version that lacks -z, or a wrapper that doesn't forward it)",
-    "failure_symptom": "Subprocess returns exitcode non-zero with stderr containing 'unrecognized arguments' or 'unknown option', or stderr contains usage/help text mentioning no -z flag",
+    "what_it_checks": "Whether hermes ultracode-llm --help is available (bridge capability; token-free)",
+    "failure_symptom": "Bridge help exits non-zero or is unrecognized; standalone adapter returns hermes_bridge_unavailable",
     "likely_causes": [
-      "Hermes version too old (pre-0.14.x) which didn't have -z flag",
-      "Wrapper script in PATH shadows real hermes and doesn't forward -z",
+      "Plugin CLI bridge not registered on the host",
+      "Wrapper script in PATH shadows real hermes and does not expose ultracode-llm",
       "Hermes installation incomplete or rolled back",
       "User alias/shell function overrides hermes with custom script"
     ],
     "fix_steps": [
-      "Check Hermes version: hermes --version should show 0.14.x or later",
-      "If too old, upgrade: run package manager update or Hermes bootstrap",
-      "Check which hermes resolves to: which hermes - should be the real binary/script, not a user alias",
-      "Verify no shell aliases: unalias hermes; which hermes (should show true path)",
-      "Test -z directly: echo 'return 1+1' | hermes -z (should print 2, not error)",
-      "If wrapper issue, rename or delete the wrapper and use real hermes path"
+      "Check which hermes resolves to: which hermes",
+      "Run: hermes ultracode-llm --help (must exit 0, no model call)",
+      "Ensure cluxion-agentplugin-effort-ultracode is installed and enabled",
+      "If a wrapper shadows hermes, point CLUXION_EFFORT_ULTRACODE_HERMES_BINARY at the real binary"
     ],
-    "change_robust": "Detection runs actual hermes -z command and checks output, not static version strings. Detects wrapper/alias shadowing at runtime.",
-    "detection_method": "Run HermesSubprocessLlm().complete('return 1+1'); check if output is '2' (valid Python eval) vs error like 'unrecognized arguments: -z'"
+    "change_robust": "Detection runs actual hermes ultracode-llm --help and checks exit code, not static version strings.",
+    "detection_method": "`hermes ultracode-llm --help` exits 0"
   },
   {
     "check_id": "hermes_timeout_configured",
@@ -296,25 +297,24 @@
     "check_id": "hermes_json_output_parseable",
     "category": "hermes_contract",
     "severity": "high",
-    "what_it_checks": "Whether hermes -z returns valid JSON-serializable output when asked for structured response (schema provided); detects non-JSON output, malformed JSON, or JSON that is not an object",
-    "failure_symptom": "Handler returns {ok: false, error: 'ConsensusProtocolError', message: 'Hermes structured output was not valid JSON after one retry: ...'} or 'returned JSON that is not an object'",
+    "what_it_checks": "Whether the local Hermes JSON-object parser accepts a valid object without making a model call",
+    "failure_symptom": "The deterministic parser contract rejects a known-valid JSON object",
     "likely_causes": [
       "Hermes model hallucinates or adds Markdown code fences around JSON (code fence stripping fails if nested/malformed)",
       "Hermes returns commentary/preamble before JSON object (JSON parser fails, retry instruction ignored)",
       "Hermes returns JSON array or primitive instead of object: [1,2,3] or '\"string\"' instead of {...}",
       "Hermes timeout causes truncated/invalid JSON output",
-      "Hermes model is not Claude or a model trained on structured outputs; may refuse or produce prose"
+      "The selected model does not reliably follow structured-output instructions"
     ],
     "fix_steps": [
-      "Check Hermes model setting: echo $CLUXION_EFFORT_ULTRACODE_HERMES_MODEL (if set)",
-      "Verify Hermes is configured with Claude model (default via hermes -z); test: echo 'return json.dumps({\"test\": \"ok\"})' | hermes -z",
-      "If output is not valid JSON, check Hermes config: hermes --config or ~/.hermes/config.yaml for model selection",
-      "If model is not Claude, reconfigure: hermes config set model <valid-model> or check ANTHROPIC_API_KEY is set",
-      "Test structured prompt directly: hermes -z 'Return JSON object {\"key\": \"value\"}' - should return clean JSON, not prose",
-      "If wrapper/override in place, verify CLUXION_EFFORT_ULTRACODE_HERMES_MODEL points to valid model: CLUXION_EFFORT_ULTRACODE_HERMES_MODEL=claude-3-5-sonnet export"
+      "Confirm the token-free bridge exists: hermes ultracode-llm --help",
+      "Run one live adapter smoke through the public CLI: cluxion-ultracode consensus --question 'Return a small decision' --adapter hermes --agents 2 --rounds 0",
+      "If a model override is requested, configure plugins.entries.cluxion-agentplugin-effort-ultracode.llm.allow_model_override and allowed_models explicitly",
+      "Otherwise remove the override and let Hermes select its configured default model",
+      "Inspect the typed invalid_model_output message; the raw bridge protocol accepts JSON on stdin only and has no positional prompt arguments"
     ],
-    "change_robust": "Detection runs actual hermes -z with schema and validates JSON parse output. Catches model output issues, not static config. Robust to hermes version/model changes.",
-    "detection_method": "Call HermesSubprocessLlm().complete(prompt, schema={...}); if ConsensusProtocolError raised with message containing 'not valid JSON after one retry' or 'returned JSON that is not an object', JSON parsing failed after retries"
+    "change_robust": "Detection calls the same local parser used by the Hermes adapter and remains token-free; live model compliance is outside this doctor probe.",
+    "detection_method": "Call _parse_json_object on a known-valid object and verify the parsed boolean field"
   },
   {
     "check_id": "consensus_schema_contract",
@@ -349,15 +349,15 @@
     "likely_causes": [
       "build_consensus_handler() called with non-callable llm_factory (e.g., llm_factory=None or llm_factory='not_a_function')",
       "llm_factory is callable but returns object without .complete() method",
-      "Handler uses default _default_llm if llm_factory not provided, but default_llm depends on hermes binary availability",
+      "A standalone handler uses the Hermes bridge while a registered Hermes handler must receive the host ctx.llm surface",
       "Hermes adapter created but .complete() method signature changed or missing"
     ],
     "fix_steps": [
       "Verify llm_factory passed to build_consensus_handler() is a callable: type(llm_factory).__name__ should be 'function' or 'type'",
-      "Test llm_factory directly: result = llm_factory(); hasattr(result, 'complete') should be True",
+      "Test the factory contract directly: result = llm_factory('hermes', timeout_seconds=120); hasattr(result, 'complete') should be True",
       "If using custom LLM adapter, ensure .complete(prompt, *, schema=None) method exists with correct signature",
-      "If using default (build_consensus_handler() with no args), ensure hermes binary is available (see hermes_binary_available check)",
-      "Verify hermes -z works: hermes -z 'return 1+1' should print 2"
+      "For a registered Hermes plugin, verify ctx.llm is present and the handler factory receives it",
+      "For standalone use, verify the token-free bridge capability with hermes ultracode-llm --help"
     ],
     "change_robust": "Detection invokes llm_factory at runtime and checks .complete() existence, not static inspection. Detects missing/broken adapters at execution time.",
     "detection_method": "Call plugin.build_consensus_handler(llm_factory); invoke handler with valid args; if ValueError raised with message 'llm_factory must be callable' or 'must return an object with complete(...)', factory contract broken"
@@ -377,7 +377,7 @@
       "LLM returns non-JSON string when schema is provided (JSON parse fails but error not clear)"
     ],
     "fix_steps": [
-      "Test LLM directly with POSITION_SCHEMA: hermes -z 'Return JSON with stance, rationale, evidence list, confidence' should return valid AgentPosition",
+      "Run a live public-CLI smoke: cluxion-ultracode consensus --question 'Choose A or B with evidence' --adapter hermes --agents 2 --rounds 0",
       "Verify field names in response: JSON keys must be exactly 'stance', 'rationale', 'evidence', 'confidence' (case-sensitive)",
       "Check evidence is non-empty list: evidence should be array with at least one string, e.g. ['Evidence for stance']",
       "Verify confidence is numeric: should be number like 0.75, not string '0.75'",
@@ -402,7 +402,7 @@
       "Round 0 response (independent positions) incorrectly includes conceded/maintained fields"
     ],
     "fix_steps": [
-      "Test DEBATE_SCHEMA directly: hermes -z with schema prompt should return object with conceded/maintained arrays",
+      "Inspect DEBATE_SCHEMA locally and verify conceded and maintained are required arrays",
       "Verify conceded and maintained are non-empty lists if stance changes: if stance differs from prior round, conceded must have at least one {point: '...', reason: '...'}",
       "Check reason fields are non-empty strings: reason: '' is invalid, must be reason: 'Reason why conceding/maintaining'",
       "If round 0 (independent round), ensure no conceded/maintained in response (only stance, rationale, evidence, confidence)",
@@ -422,15 +422,15 @@
       "LLM returns plain text prose instead of JSON (e.g., 'I agree with agent-2...')",
       "LLM returns JSON array instead of object: [{...}] or ['A', 'B']",
       "LLM returns JSON primitive: 123, 'string', true, null",
-      "Hermes -z retry mechanism exhausted (first attempt non-JSON, retry also non-JSON)",
+      "Hermes bridge JSON repair retry mechanism exhausted (first attempt non-JSON, retry also non-JSON)",
       "LLM wraps JSON in extra commentary that is not stripped by code-fence handler"
     ],
     "fix_steps": [
-      "Test LLM with DEBATE_SCHEMA: hermes -z 'Return ONLY JSON object matching schema' should return dict-like structure, not prose or array",
-      "Verify Hermes structured mode is working: echo 'return json.dumps({\"test\": \"ok\"})' | hermes -z should return clean JSON",
+      "Run a live public-CLI smoke with one debate round: cluxion-ultracode consensus --question 'Choose A or B with evidence' --adapter hermes --agents 2 --rounds 1",
+      "Verify the token-free bridge capability separately with hermes ultracode-llm --help",
       "If JSON is wrapped in code fences with preamble, check _strip_code_fence: should remove markdown ```json ... ``` but not plain prose",
       "Test retry message: Hermes is given a retry instruction after first failure, should be stricter: 'Return ONLY raw JSON. No Markdown fences, no commentary, no prose.'",
-      "If LLM keeps returning prose, check if model is Claude (claude-3-5-sonnet, etc.) - non-Claude models may not follow JSON-only instructions"
+      "If the selected model keeps returning prose, choose a model that reliably follows JSON-only instructions"
     ],
     "change_robust": "Detection parses actual LLM response and validates JSON type at runtime. Detects LLM non-compliance with structured output instructions.",
     "detection_method": "Run ConsensusEngine.decide() with max_rounds >= 1; if ConsensusProtocolError raised with message 'returned non-JSON text for structured output|returned unsupported response type', response parsing failed"
@@ -462,7 +462,7 @@
     "category": "concurrency",
     "severity": "medium",
     "what_it_checks": "Whether debate rounds might loop indefinitely or exceed reasonable cost bounds; specifically checks that consensus engine terminates within max_rounds and counts LLM calls (worst case: agents * (rounds + 1) calls)",
-    "failure_symptom": "Plugin execution takes unexpectedly long, or cost of hermes -z calls is very high (user can see by checking Anthropic API usage for many small requests). No hard failure, but degraded performance.",
+    "failure_symptom": "Plugin execution takes unexpectedly long, or Hermes/provider usage accounting shows many costly model calls. No hard failure, but degraded performance.",
     "likely_causes": [
       "max_rounds set to very large value (e.g., 10 or 100) by caller",
       "agents_count set very high (e.g., 10 agents)",
@@ -505,33 +505,32 @@
     "check_id": "hermes_subprocess_returncode_nonzero",
     "category": "hermes_contract",
     "severity": "high",
-    "what_it_checks": "Whether hermes -z subprocess exits with code 0; if non-zero, indicates Hermes LLM error, timeout, or crash",
-    "failure_symptom": "Handler returns {ok: false, error: 'ConsensusProtocolError', message: 'hermes -z exited with code [1|2|...]: [stderr details]'} at plugin invocation",
+    "what_it_checks": "Whether the standalone Hermes adapter exposes its bridge runner used to classify process return codes",
+    "failure_symptom": "The adapter runner is missing, so nonzero bridge results cannot be classified",
     "likely_causes": [
       "Hermes LLM call failed (e.g., API key invalid, model unavailable, network error)",
       "Hermes subprocess crashed (segfault, panic, Python exception)",
-      "Hermes command-line args are invalid for this version",
-      "hermes -z with -m specifies non-existent or inaccessible model",
+      "The registered ultracode-llm bridge command is missing or incompatible",
+      "A requested model override was denied or is not in the host allowlist",
       "Hermes configuration is broken (config.yaml missing or malformed)"
     ],
     "fix_steps": [
-      "Test hermes -z directly: hermes -z 'return 1+1' should print '2' and exit 0",
-      "If error, check stderr: hermes -z 'return 1+1' 2>&1 | cat to see exact error message",
-      "Verify Hermes config: hermes config show or cat ~/.hermes/config.yaml - should show valid model and API key",
-      "Check Hermes model is accessible: hermes --models or similar to list available models",
-      "If using CLUXION_EFFORT_ULTRACODE_HERMES_MODEL override, verify model exists: hermes --models | grep $CLUXION_EFFORT_ULTRACODE_HERMES_MODEL",
-      "Check API key: if using Claude via Anthropic API, ANTHROPIC_API_KEY must be set and valid",
+      "Verify the token-free command surface: hermes ultracode-llm --help",
+      "Run the supported public CLI path: cluxion-ultracode consensus --question 'Bridge smoke' --adapter hermes --agents 2 --rounds 0",
+      "Inspect Hermes host logs for the underlying bridge failure; raw stderr is intentionally not copied into user-facing errors",
+      "Verify Hermes config and provider credentials using the host's documented diagnostics",
+      "If using --models, verify plugins.entries.cluxion-agentplugin-effort-ultracode.llm.allow_model_override and allowed_models",
       "Increase timeout if Hermes is slow: CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT=300 (5 minutes)"
     ],
-    "change_robust": "Detection checks actual subprocess exitcode from hermes -z call. Detects runtime Hermes failures including API, config, and environment issues.",
-    "detection_method": "Run HermesSubprocessLlm().complete(...); inspect subprocess.run() result. If returncode != 0, subprocess raised error (caught and re-raised as ConsensusProtocolError with message 'hermes -z exited with code N: ...')"
+    "change_robust": "Detection introspects the adapter runner without launching Hermes or spending tokens; runtime returncode paths are covered by adapter tests.",
+    "detection_method": "Verify HermesSubprocessLlm._run_bridge_once is callable"
   },
   {
     "check_id": "hermes_subprocess_timeout_triggered",
     "category": "concurrency",
     "severity": "high",
-    "what_it_checks": "Whether hermes -z subprocess times out after CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT seconds",
-    "failure_symptom": "Handler returns {ok: false, error: 'ConsensusProtocolError', message: 'hermes -z timed out after [N] seconds'} at plugin invocation",
+    "what_it_checks": "Whether the standalone adapter accepts and retains a positive timeout configuration",
+    "failure_symptom": "HermesSubprocessLlm(timeout_seconds=1) does not retain the validated value",
     "likely_causes": [
       "Hermes model is slow (large prompt, complex reasoning, overloaded API)",
       "Network latency high (API call takes time)",
@@ -541,14 +540,14 @@
     ],
     "fix_steps": [
       "Increase timeout: export CLUXION_EFFORT_ULTRACODE_HERMES_TIMEOUT=300 (or higher)",
-      "Test single hermes -z call latency: time hermes -z 'return 1+1' to measure baseline",
+      "Measure the supported public path: time cluxion-ultracode consensus --question 'Latency smoke' --adapter hermes --agents 2 --rounds 0",
       "Check system load: top or similar - if CPU/memory maxed, hermes may be slow",
       "Simplify prompts: if debate prompts are very long, reduce context or evidence length",
-      "Check Hermes API status: if using Anthropic API, verify API is responsive (try direct API call or hermes --check-api)",
+      "Check the configured provider's service status with its official status page or Hermes diagnostics",
       "Profile consensus loop: add logging to see which agent/round is slowest, may help identify bottleneck"
     ],
-    "change_robust": "Detection monitors actual subprocess timeout via subprocess.run(timeout=...) parameter. Detects performance issues at runtime.",
-    "detection_method": "Run HermesSubprocessLlm().complete(...); if subprocess.TimeoutExpired is raised (timeout_seconds exceeded), caught and re-raised as ConsensusProtocolError with message 'hermes -z timed out after [N] seconds'"
+    "change_robust": "Detection constructs the adapter only and is token-free; runtime deadline enforcement is covered by adapter tests.",
+    "detection_method": "Construct HermesSubprocessLlm(timeout_seconds=1) and verify timeout_seconds == 1"
   },
   {
     "check_id": "llm_port_complete_method_signature",
