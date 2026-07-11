@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.resources
 import inspect
 import json
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -27,7 +28,7 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
-from cluxion_effort_ultracode.core.errors import require_positive_finite, validation_error_code
+from cluxion_effort_ultracode.core.errors import require_positive_finite, require_utf8_text, validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
     JournalBusy,
@@ -235,6 +236,8 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
         if not question:
             raise ValueError("question is required unless resume points to a journal")
         context = _text_arg(args, "context", default=str((saved or {}).get("context", "")))
+        require_utf8_text(question, "question")
+        require_utf8_text(context, "context")
         rounds = _int_arg(args, "rounds", default=int((saved or {}).get("max_rounds", 3)))
         agents = _int_arg(args, "agents", default=int((saved or {}).get("agents_count", 3)))
         agent_timeout = require_positive_finite(
@@ -415,20 +418,23 @@ def _text_arg(
 
 def _int_arg(args: Mapping[str, object], key: str, *, default: int) -> int:
     value = args.get(key, default)
-    if isinstance(value, bool):
-        raise ValueError(f"{key} must be an integer")
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{key} must be an integer") from exc
+    return _coerce_int(value, key)
 
 
 def _optional_int_arg(args: Mapping[str, object], key: str, *, default: object = None) -> int | None:
     value = default if key not in args or args[key] is None else args[key]
     if value is None:
         return None
+    return _coerce_int(value, key)
+
+
+def _coerce_int(value: object, key: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{key} must be an integer")
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError(f"{key} must be an integer")
+        return int(value)
     try:
         return int(value)
     except (TypeError, ValueError, OverflowError) as exc:

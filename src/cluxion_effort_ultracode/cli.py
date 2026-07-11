@@ -25,7 +25,7 @@ from cluxion_effort_ultracode.core.consensus import (
     MAX_AGENTS,
     MAX_ROUNDS,
 )
-from cluxion_effort_ultracode.core.errors import require_positive_finite, validation_error_code
+from cluxion_effort_ultracode.core.errors import require_positive_finite, require_utf8_text, validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
     JournalBusy,
@@ -279,6 +279,8 @@ def _prepare_consensus(namespace: argparse.Namespace) -> _ConsensusConfig:
             saved = None
         question = _question_arg(namespace, saved)
         context = namespace.context if namespace.context is not None else str((saved or {}).get("context", ""))
+        require_utf8_text(question, "question")
+        require_utf8_text(context, "context")
         rounds = int(_saved_or(namespace.rounds, saved, "max_rounds", 3))
         agents = _bounded_int(_saved_or(namespace.agents, saved, "agents_count", 3), "agents_count", 2, MAX_AGENTS)
         budget_tokens = _optional_int(_saved_or(namespace.budget_tokens, saved, "budget_tokens", None))
@@ -343,6 +345,8 @@ def _question_arg(namespace: argparse.Namespace, saved: Mapping[str, object] | N
     if namespace.question_file:
         try:
             question = Path(namespace.question_file).read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise ValueError("question file is not valid UTF-8") from exc
         except OSError as exc:
             raise ValueError(f"question file could not be read: {exc}") from exc
     elif namespace.question == "-":

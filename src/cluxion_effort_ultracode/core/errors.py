@@ -23,6 +23,17 @@ def validation_error_code(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def require_utf8_text(value: str, field: str) -> str:
+    """Reject lone surrogates / non-UTF-8 text before journal creation."""
+    try:
+        value.encode("utf-8")
+    except UnicodeError as exc:
+        # Context is part of the existing question/prompt input contract.
+        label = "question context" if field == "context" else field
+        raise ValueError(f"{label} must be valid UTF-8 text") from exc
+    return value
+
+
 def require_positive_finite(value: object, field: str) -> float:
     """Coerce int/float to a positive finite float.
 

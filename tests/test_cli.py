@@ -254,6 +254,61 @@ def test_consensus_cli_rejects_empty_question(capsys, question: str):
     assert "question" in payload["message"]
 
 
+def test_consensus_cli_rejects_invalid_utf8_question_file_before_journal(capsys, tmp_path: Path):
+    question_file = tmp_path / "bad.txt"
+    question_file.write_bytes(b"\xff\xfe invalid")
+
+    exit_code = main(
+        ["consensus", "--question-file", str(question_file), "--adapter", "mock-unanimous", "--agents", "2"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_question"
+    assert "run_id" not in payload
+    assert "journal_path" not in payload
+    assert not journals_dir().exists()
+
+
+def test_consensus_cli_rejects_surrogate_question_before_journal(capsys):
+    exit_code = main(
+        ["consensus", "--question", "Adopt?\udcff", "--adapter", "mock-unanimous", "--agents", "2"]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_question"
+    assert "run_id" not in payload
+    assert "journal_path" not in payload
+    assert not journals_dir().exists()
+
+
+def test_consensus_cli_rejects_surrogate_context_before_journal(capsys):
+    exit_code = main(
+        [
+            "consensus",
+            "--question",
+            "Adopt?",
+            "--context",
+            "ctx\udcff",
+            "--adapter",
+            "mock-unanimous",
+            "--agents",
+            "2",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_question"
+    assert "run_id" not in payload
+    assert "journal_path" not in payload
+    assert not journals_dir().exists()
+
+
 @pytest.mark.parametrize(
     ("argv", "code"),
     [

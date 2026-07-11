@@ -429,6 +429,69 @@ def test_plugin_int_args_map_overflow_to_integer_error(args: dict[str, object]) 
     assert not journals_dir().exists()
 
 
+@pytest.mark.parametrize("agents", [2.9, True, False])
+def test_plugin_rejects_non_integral_or_bool_agents_before_journal(agents: object) -> None:
+    handler = plugin.build_consensus_handler(_factory(NoCallLlm()))
+
+    payload = json.loads(handler({"question": "Q?", "agents": agents, "rounds": 0}))
+
+    assert payload["ok"] is False
+    assert "must be an integer" in payload["message"]
+    assert "run_id" not in payload
+    assert "journal_path" not in payload
+    assert not journals_dir().exists()
+
+
+@pytest.mark.parametrize("budget_tokens", [2.9, True])
+def test_plugin_rejects_non_integral_or_bool_budget_tokens_before_journal(budget_tokens: object) -> None:
+    handler = plugin.build_consensus_handler(_factory(NoCallLlm()))
+
+    payload = json.loads(handler({"question": "Q?", "agents": 2, "rounds": 0, "budget_tokens": budget_tokens}))
+
+    assert payload["ok"] is False
+    assert "must be an integer" in payload["message"]
+    assert "run_id" not in payload
+    assert "journal_path" not in payload
+    assert not journals_dir().exists()
+
+
+@pytest.mark.parametrize("agents", [2.0, "2"])
+def test_plugin_int_args_accept_integral_float_and_decimal_string(agents: object) -> None:
+    llm = ScriptedLlm([position("yes"), position("yes")])
+    handler = plugin.build_consensus_handler(_factory(llm))
+
+    payload = json.loads(handler({"question": "Should we answer yes?", "rounds": 0, "agents": agents}))
+
+    assert payload["ok"] is True
+    assert payload["result"]["status"] == "unanimous"
+    assert payload["result"]["agents_count"] == 2
+    assert len(llm.calls) == 2
+
+
+def test_consensus_handler_rejects_surrogate_question_before_journal() -> None:
+    handler = plugin.build_consensus_handler(_factory(NoCallLlm()))
+
+    payload = json.loads(handler({"question": "Q?\udcff", "agents": 2, "rounds": 0}))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_question"
+    assert "run_id" not in payload
+    assert "journal_path" not in payload
+    assert not journals_dir().exists()
+
+
+def test_consensus_handler_rejects_surrogate_context_before_journal() -> None:
+    handler = plugin.build_consensus_handler(_factory(NoCallLlm()))
+
+    payload = json.loads(handler({"question": "Q?", "context": "ctx\udcff", "agents": 2, "rounds": 0}))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "invalid_question"
+    assert "run_id" not in payload
+    assert "journal_path" not in payload
+    assert not journals_dir().exists()
+
+
 def test_consensus_handler_returns_honest_missing_hermes_error() -> None:
     handler = plugin.build_consensus_handler(_factory(MissingHermesLlm()))
 
