@@ -159,7 +159,8 @@ def test_register_uses_real_hermes_tool_contract() -> None:
     assert "models" in schema["parameters"]["properties"]
     assert schema["parameters"]["properties"]["adapter"]["enum"] == ["hermes", "codex"]
     assert any(cmd["name"] == BRIDGE_CLI_NAME for cmd in ctx.cli_commands)
-    assert any(cmd["name"] == "cluxion-consensus" for cmd in ctx.commands)
+    assert any(cmd["name"] == "clx-consensus" for cmd in ctx.commands)
+    assert not any(cmd["name"] == "cluxion-consensus" for cmd in ctx.commands)
 
 
 def test_register_tolerates_host_without_register_tool() -> None:
@@ -201,7 +202,8 @@ def test_registered_tool_and_slash_use_host_llm_not_subprocess() -> None:
     assert payload["ok"] is True
     assert popen.call_count == 0
 
-    slash = next(c for c in ctx.commands if c["name"] == "cluxion-consensus")["handler"]
+    slash = next(c for c in ctx.commands if c["name"] == "clx-consensus")["handler"]
+    assert slash("") == "Usage: /clx-consensus <question|--resume run_id>"
     with patch("cluxion_effort_ultracode.adapters.subprocess_common.subprocess.Popen") as popen:
         raw = slash("Should we answer yes?")
     assert '"ok": true' in raw or '"ok":true' in raw.replace(" ", "")

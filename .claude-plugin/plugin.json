@@ -1,6 +1,6 @@
 {
   "name": "clx-ultracode",
-  "version": "0.1.29",
+  "version": "0.1.30",
   "description": "Cluxion Effort-Ultracode: portable 3-agent adversarial consensus debate for Codex, Claude Code, and Hermes.",
   "author": {
     "name": "cluxion"

@@ -27,7 +27,8 @@ def test_root_plugin_artifacts_are_version_synced() -> None:
     assert claude == codex
     assert claude["name"] == CANONICAL_PLUGIN_ID
     assert codex["name"] == CANONICAL_PLUGIN_ID
-    assert Path("commands/cluxion-consensus.md").is_file()
+    assert Path("commands/clx-consensus.md").is_file()
+    assert not Path("commands/cluxion-consensus.md").exists()
     assert Path("commands/ultracode-doctor.md").is_file()
     assert Path("skills/ultracode/SKILL.md").is_file()
 

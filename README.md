@@ -124,14 +124,14 @@ Hermes 안에서는 `ultracode_doctor` 도구로도 노출됩니다.
 Codex/Claude Code 플러그인 명령:
 
 ```
-/cluxion-consensus 이 리팩터링 방향을 채택할까?
+/clx-consensus 이 리팩터링 방향을 채택할까?
 /ultracode-doctor
 ```
 
 Hermes 플러그인 명령:
 
 ```
-/cluxion-consensus 이 리팩터링 방향을 채택할까?
+/clx-consensus 이 리팩터링 방향을 채택할까?
 /ultracode-doctor
 ```
 
@@ -267,14 +267,14 @@ Also exposed inside Hermes as the `ultracode_doctor` tool.
 Codex/Claude Code plugin commands:
 
 ```
-/cluxion-consensus Should we adopt this refactor direction?
+/clx-consensus Should we adopt this refactor direction?
 /ultracode-doctor
 ```
 
 Hermes plugin commands:
 
 ```
-/cluxion-consensus Should we adopt this refactor direction?
+/clx-consensus Should we adopt this refactor direction?
 /ultracode-doctor
 ```
 

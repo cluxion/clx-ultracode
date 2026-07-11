@@ -165,10 +165,10 @@ def register(ctx: object) -> None:
     register_command = getattr(ctx, "register_command", None)
     if callable(register_command):
 
-        def _slash_cluxion_consensus(raw_args: str) -> str:
+        def _slash_clx_consensus(raw_args: str) -> str:
             question = raw_args.strip()
             if not question:
-                return "Usage: /cluxion-consensus <question|--resume run_id>"
+                return "Usage: /clx-consensus <question|--resume run_id>"
             args = (
                 {"resume": question.split(maxsplit=1)[1]}
                 if question.startswith("--resume ")
@@ -182,8 +182,8 @@ def register(ctx: object) -> None:
             return _handle_doctor({})
 
         register_command(
-            "cluxion-consensus",
-            _slash_cluxion_consensus,
+            "clx-consensus",
+            _slash_clx_consensus,
             description="Run 3-agent adversarial consensus debate (ultracode)",
             args_hint="<question>",
         )
