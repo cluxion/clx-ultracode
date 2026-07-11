@@ -107,11 +107,13 @@ def test_resume_append_tightens_existing_journal_modes(tmp_path: Path) -> None:
     run_header = header()
     journal = DebateJournal.start(run_header, home=tmp_path)
     journal.append({"type": "call", "run_id": "abc123"})
+    journal.close()
     os.chmod(journal.path.parent, 0o755)
     os.chmod(journal.path, 0o644)
 
     resumed = DebateJournal.resume("abc123", run_header, home=tmp_path)
     resumed.append({"type": "result", "run_id": "abc123"})
+    resumed.close()
 
     assert mode(journal.path.parent) == 0o700
     assert mode(journal.path) == 0o600
@@ -123,6 +125,7 @@ def test_crash_then_resume_replays_prefix_and_continues(tmp_path: Path) -> None:
     first_llm = ScriptedLlm([position("Adopt"), position("Delay"), update("Adopt"), update("Adopt", conceded=True)])
     first = ConsensusEngine(JournaledLlm(first_llm, journal), agents_count=2, max_rounds=1).decide("Q?", context="ctx")
     assert first.status == "unanimous"
+    journal.close()
 
     lines = journal.path.read_text(encoding="utf-8").splitlines()
     journal.path.write_text("\n".join(lines[:3]) + "\n", encoding="utf-8")
@@ -133,6 +136,7 @@ def test_crash_then_resume_replays_prefix_and_continues(tmp_path: Path) -> None:
         "Q?",
         context="ctx",
     )
+    resumed_journal.close()
 
     assert resumed.status == "unanimous"
     assert len(suffix_llm.calls) == 2
@@ -143,6 +147,7 @@ def test_resume_mismatch_reports_changed_question(tmp_path: Path) -> None:
     run_header = header()
     journal = DebateJournal.start(run_header, home=tmp_path)
     journal.append({"type": "call", "run_id": "abc123"})
+    journal.close()
     changed = header(question="Different?")
 
     with pytest.raises(ResumeMismatch) as exc:
@@ -159,12 +164,14 @@ def test_completed_run_full_replay_is_deterministic(tmp_path: Path) -> None:
         agents_count=2,
         max_rounds=1,
     ).decide("Q?", context="ctx")
+    journal.close()
 
     replayed_journal = DebateJournal.resume("abc123", run_header, home=tmp_path)
     replayed = ConsensusEngine(JournaledLlm(ExplodingLlm(), replayed_journal), agents_count=2, max_rounds=1).decide(
         "Q?",
         context="ctx",
     )
+    replayed_journal.close()
 
     assert replayed.status == first.status
     assert replayed.decision == first.decision
@@ -233,3 +240,625 @@ def test_journals_gc_rejects_datetime_cutoff_overflow_before_filesystem_access(t
         gc_journals(home=home, older_than_days=999_999_999, apply=True)
 
     assert not home.exists()
+
+
+def test_debate_journal_close_is_idempotent(tmp_path: Path) -> None:
+    run_header = header()
+    journal = DebateJournal.start(run_header, home=tmp_path)
+    journal.append({"type": "call", "run_id": "abc123", "seq": 0})
+    journal.close()
+    journal.close()  # must not raise
+
+
+def test_resume_second_holder_is_journal_busy(tmp_path: Path) -> None:
+    from cluxion_effort_ultracode.core.journal import JournalBusy
+
+    run_header = header()
+    first = DebateJournal.start(run_header, home=tmp_path)
+    first.append({"type": "call", "run_id": "abc123", "seq": 0})
+    first.close()
+
+    holder = DebateJournal.resume("abc123", run_header, home=tmp_path)
+    try:
+        with pytest.raises(JournalBusy) as exc:
+            DebateJournal.resume("abc123", run_header, home=tmp_path)
+        assert exc.value.run_id == "abc123"
+    finally:
+        holder.close()
+
+
+def test_multiprocess_resume_busy_gc_preserves_active_and_exit_releases(tmp_path: Path) -> None:
+    """Real OS lock across processes: busy resume, GC skips active, exit releases, then resume+GC work."""
+    import multiprocessing as mp
+
+    from cluxion_effort_ultracode.core.journal import JournalBusy
+    from mp_helpers import hold_journal_until_release
+
+    run_header = header(run_id="lockrun1")
+    seed = DebateJournal.start(run_header, home=tmp_path)
+    seed.append({"type": "call", "run_id": "lockrun1", "seq": 0})
+    seed.close()
+
+    ctx = mp.get_context("spawn")
+    ready = ctx.Queue()
+    release = ctx.Queue()
+
+    proc = ctx.Process(target=hold_journal_until_release, args=(str(tmp_path), "lockrun1", ready, release))
+    proc.start()
+    assert ready.get(timeout=10) == "ready"
+
+    with pytest.raises(JournalBusy):
+        DebateJournal.resume("lockrun1", run_header, home=tmp_path)
+
+    old = dict(run_header)
+    old["created_at"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    journal_path = tmp_path / "journals" / "lockrun1.jsonl"
+    body = journal_path.read_text(encoding="utf-8").splitlines()
+    body[0] = json.dumps(old)
+    journal_path.write_text("\n".join(body) + "\n", encoding="utf-8")
+
+    applied_busy = gc_journals(home=tmp_path, older_than_days=7, apply=True)
+    assert journal_path.exists()
+    busy_ids = [c["run_id"] for c in applied_busy["candidates"]]
+    assert "lockrun1" not in busy_ids
+
+    release.put("done")
+    proc.join(timeout=10)
+    assert proc.exitcode == 0
+
+    resumed = DebateJournal.resume("lockrun1", run_header, home=tmp_path)
+    resumed.close()
+
+    body = journal_path.read_text(encoding="utf-8").splitlines()
+    body[0] = json.dumps(old)
+    journal_path.write_text("\n".join(body) + "\n", encoding="utf-8")
+    applied = gc_journals(home=tmp_path, older_than_days=7, apply=True)
+    assert [c["run_id"] for c in applied["candidates"]] == ["lockrun1"]
+    assert not journal_path.exists()
+
+
+def test_journal_write_failure_retains_ownership_until_close(tmp_path: Path) -> None:
+    from cluxion_effort_ultracode.core.journal import JournalBusy
+
+    run_header = header()
+    seed = DebateJournal.start(run_header, home=tmp_path)
+    seed.append({"type": "call", "run_id": "abc123", "seq": 0})
+    seed.close()
+
+    class BrokenFile:
+        def write(self, value: str) -> int:
+            del value
+            raise OSError("readonly")
+
+        def flush(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    # Replace write surface but keep underlying locked fd ownership via journal internals.
+    locked = DebateJournal.resume("abc123", run_header, home=tmp_path)
+    try:
+        real_file = locked._file
+        locked._file = BrokenFile()
+        locked.append({"type": "call", "run_id": "abc123", "seq": 1})
+        # Ownership retained: second resume still busy.
+        with pytest.raises(JournalBusy):
+            DebateJournal.resume("abc123", run_header, home=tmp_path)
+        locked._file = real_file
+    finally:
+        locked.close()
+
+    # After close, resume works again.
+    free = DebateJournal.resume("abc123", run_header, home=tmp_path)
+    free.close()
+
+
+def test_new_run_lazy_open_refuses_collision_including_zero_bytes(tmp_path: Path) -> None:
+    """O_EXCL new-run create: existing file (even empty) never receives header/call bytes."""
+    run_header = header(run_id="collide1")
+    journal = DebateJournal.start(run_header, home=tmp_path)
+    journal.path.parent.mkdir(parents=True, exist_ok=True)
+    journal.path.write_bytes(b"")  # zero-byte collision
+    before = journal.path.read_bytes()
+
+    journal.append({"type": "call", "run_id": "collide1", "seq": 0})
+
+    assert journal.path.read_bytes() == before
+    assert before == b""
+
+
+def test_new_run_lazy_open_refuses_nonempty_collision_bytes_unchanged(tmp_path: Path) -> None:
+    run_header = header(run_id="collide2")
+    journal = DebateJournal.start(run_header, home=tmp_path)
+    journal.path.parent.mkdir(parents=True, exist_ok=True)
+    preexisting = b'{"type":"header","run_id":"collide2"}\n'
+    journal.path.write_bytes(preexisting)
+
+    journal.append({"type": "call", "run_id": "collide2", "seq": 0})
+
+    assert journal.path.read_bytes() == preexisting
+
+
+@pytest.mark.skipif(not hasattr(os, "O_APPEND"), reason="POSIX open flags required")
+def test_resume_opens_same_fd_with_kernel_o_append(tmp_path: Path) -> None:
+    import fcntl
+
+    run_header = header()
+    seed = DebateJournal.start(run_header, home=tmp_path)
+    seed.append({"type": "call", "run_id": "abc123", "seq": 0})
+    seed.close()
+
+    resumed = DebateJournal.resume("abc123", run_header, home=tmp_path)
+    try:
+        assert resumed._file is not None
+        flags = fcntl.fcntl(resumed._file.fileno(), fcntl.F_GETFL)
+        assert flags & os.O_APPEND, f"resume FD missing O_APPEND (flags={flags:#x})"
+        # Same live FD retained through ownership lifetime (not reopened as a second handle).
+        fd = resumed._file.fileno()
+        assert fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_APPEND
+    finally:
+        resumed.close()
+
+
+def test_destructive_gc_without_lock_support_raises_typed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cluxion_effort_ultracode.core.journal_lifecycle as lifecycle
+    from cluxion_effort_ultracode.core.journal import JournalLockUnsupported
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "oldrun.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "header",
+                "run_id": "oldrun",
+                "created_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    monkeypatch.setattr(lifecycle, "locks_supported", lambda: False)
+
+    with pytest.raises(JournalLockUnsupported):
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    assert path.read_bytes() == before
+    assert path.exists()
+
+
+def test_gc_dry_run_without_lock_support_stays_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cluxion_effort_ultracode.core.journal_lifecycle as lifecycle
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "oldrun.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "header",
+                "run_id": "oldrun",
+                "created_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    monkeypatch.setattr(lifecycle, "locks_supported", lambda: False)
+
+    dry = gc_journals(home=tmp_path, older_than_days=7, apply=False)
+    assert path.read_bytes() == before
+    assert [c["run_id"] for c in dry["candidates"]] == ["oldrun"]
+
+
+def test_runtime_flock_enotsup_apply_raises_typed_and_preserves_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import JournalLockUnsupported
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "oldrun.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "header",
+                "run_id": "oldrun",
+                "created_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnotsup:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnotsup())
+
+    with pytest.raises(JournalLockUnsupported) as exc:
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    assert isinstance(exc.value.__cause__, OSError)
+    assert exc.value.__cause__.errno == errno.ENOTSUP
+    assert path.read_bytes() == before
+    assert path.exists()
+
+
+def test_runtime_flock_enotsup_dry_run_returns_old_candidate_unlocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "oldrun.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "header",
+                "run_id": "oldrun",
+                "created_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnotsup:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnotsup())
+
+    dry = gc_journals(home=tmp_path, older_than_days=7, apply=False)
+    assert path.read_bytes() == before
+    assert [c["run_id"] for c in dry["candidates"]] == ["oldrun"]
+
+
+def test_resume_runtime_flock_enotsup_is_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import JournalLockUnsupported
+
+    run_header = header()
+    seed = DebateJournal.start(run_header, home=tmp_path)
+    seed.append({"type": "call", "run_id": "abc123", "seq": 0})
+    seed.close()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnotsup:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnotsup())
+
+    with pytest.raises(JournalLockUnsupported) as exc:
+        DebateJournal.resume("abc123", run_header, home=tmp_path)
+    assert isinstance(exc.value.__cause__, OSError)
+    assert exc.value.__cause__.errno == errno.ENOTSUP
+
+
+def test_new_run_flock_enotsup_fail_open_disables_writes_no_fd_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """fcntl present + flock ENOTSUP after O_EXCL: close FD once, leave zero-byte file, disable writes."""
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+    real_open = journal_mod.os.open
+    real_close = journal_mod.os.close
+    captured: dict[str, int | None] = {"fd": None, "closes": 0}
+
+    class _FlockEnotsup:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del flags
+            captured["fd"] = fd
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    def tracking_open(path_arg, flags, mode=0o777):
+        fd = real_open(path_arg, flags, mode)
+        return fd
+
+    def tracking_close(fd: int) -> None:
+        if captured["fd"] is not None and fd == captured["fd"]:
+            captured["closes"] = int(captured["closes"]) + 1
+        return real_close(fd)
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnotsup())
+    monkeypatch.setattr(journal_mod.os, "open", tracking_open)
+    monkeypatch.setattr(journal_mod.os, "close", tracking_close)
+
+    run_header = header(run_id="enotsup1")
+    journal = DebateJournal.start(run_header, home=tmp_path)
+
+    journal.append({"type": "call", "run_id": "enotsup1", "seq": 0})
+    journal.append({"type": "call", "run_id": "enotsup1", "seq": 1})
+
+    owned_fd = captured["fd"]
+    assert owned_fd is not None
+    assert captured["closes"] == 1
+    with pytest.raises(OSError) as bad:
+        os.fstat(owned_fd)
+    assert bad.value.errno == errno.EBADF
+
+    assert journal.path.exists()
+    assert journal.path.read_bytes() == b""
+    assert journal._file is None
+    assert journal._locked is False
+    assert journal._writes_disabled is True
+
+    err = capsys.readouterr().err
+    assert err.count("warning: ultracode journal disabled:") == 1
+    assert "unsupported" in err.lower() or "ENOTSUP" in err or "not supported" in err.lower()
+
+
+def test_lock_exclusive_enolck_maps_to_typed_with_retryable_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ENOLCK → JournalLockUnsupported preserving cause errno and retryable message."""
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import JournalLockUnsupported, _lock_exclusive_nonblocking
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+    cause = OSError(errno.ENOLCK, "No locks available")
+
+    class _FlockEnolck:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise cause
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnolck())
+
+    with pytest.raises(JournalLockUnsupported) as exc:
+        _lock_exclusive_nonblocking(0, "run-x")
+
+    assert exc.value.__cause__ is cause
+    assert isinstance(exc.value.__cause__, OSError)
+    assert exc.value.__cause__.errno == errno.ENOLCK
+    message = str(exc.value).lower()
+    assert "enolck" in message
+    assert "temporarily unavailable" in message or "retryable" in message
+    assert "lock resources" in message or "resources" in message
+
+
+def test_gc_apply_enolck_raises_typed_preserves_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import JournalLockUnsupported
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "oldrun.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "header",
+                "run_id": "oldrun",
+                "created_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnolck:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnolck())
+
+    with pytest.raises(JournalLockUnsupported) as exc:
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    assert isinstance(exc.value.__cause__, OSError)
+    assert exc.value.__cause__.errno == errno.ENOLCK
+    assert "retryable" in str(exc.value).lower() or "temporarily unavailable" in str(exc.value).lower()
+    assert path.read_bytes() == before
+    assert path.exists()
+
+
+def test_gc_dry_run_enolck_stays_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "oldrun.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "header",
+                "run_id": "oldrun",
+                "created_at": (datetime.now(UTC) - timedelta(days=30)).isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnolck:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnolck())
+
+    dry = gc_journals(home=tmp_path, older_than_days=7, apply=False)
+    assert path.read_bytes() == before
+    assert [c["run_id"] for c in dry["candidates"]] == ["oldrun"]
+
+
+def test_resume_enolck_is_typed_with_cause(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import JournalLockUnsupported
+
+    run_header = header()
+    seed = DebateJournal.start(run_header, home=tmp_path)
+    seed.append({"type": "call", "run_id": "abc123", "seq": 0})
+    seed.close()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnolck:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnolck())
+
+    with pytest.raises(JournalLockUnsupported) as exc:
+        DebateJournal.resume("abc123", run_header, home=tmp_path)
+    assert isinstance(exc.value.__cause__, OSError)
+    assert exc.value.__cause__.errno == errno.ENOLCK
+    assert "ENOLCK" in str(exc.value)
+
+
+def test_new_run_enolck_disables_only_this_journal_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ENOLCK on new-run fails open for that journal only; a later run_id can still attempt locks."""
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+    calls = {"n": 0}
+
+    class _FlockEnolckThenOk:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del flags
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(errno.ENOLCK, "No locks available")
+            # Subsequent run_ids retry normally (real flock on this fd).
+            real_fcntl.flock(fd, real_fcntl.LOCK_EX | real_fcntl.LOCK_NB)
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnolckThenOk())
+
+    disabled = DebateJournal.start(header(run_id="enolck-a"), home=tmp_path)
+    disabled.append({"type": "call", "run_id": "enolck-a", "seq": 0})
+    assert disabled._writes_disabled is True
+    assert disabled.path.read_bytes() == b""
+
+    # Second append on same object must not re-open / re-lock.
+    locks_before = calls["n"]
+    disabled.append({"type": "call", "run_id": "enolck-a", "seq": 1})
+    assert calls["n"] == locks_before
+
+    other = DebateJournal.start(header(run_id="enolck-b"), home=tmp_path)
+    other.append({"type": "call", "run_id": "enolck-b", "seq": 0})
+    try:
+        assert other._writes_disabled is False
+        assert other._file is not None
+        assert other.path.stat().st_size > 0
+        assert calls["n"] == locks_before + 1
+    finally:
+        other.close()
+
+    err = capsys.readouterr().err
+    assert err.count("warning: ultracode journal disabled:") == 1
+
+
+def test_resume_open_unlink_race_is_typed_resume_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import ResumeNotFound
+
+    run_header = header()
+    seed = DebateJournal.start(run_header, home=tmp_path)
+    seed.append({"type": "call", "run_id": "abc123", "seq": 0})
+    seed.close()
+
+    path = tmp_path / "journals" / "abc123.jsonl"
+    real_open = journal_mod.os.open
+    calls = {"n": 0}
+
+    def unlink_before_open(path_arg: int | str | bytes | os.PathLike[str], flags: int, mode: int = 0o777) -> int:
+        # Resume path only: after exists check, unlink then delegate so open raises FileNotFoundError.
+        if os.fspath(path_arg) == os.fspath(path):
+            calls["n"] += 1
+            path.unlink(missing_ok=True)
+        return real_open(path_arg, flags, mode)
+
+    monkeypatch.setattr(journal_mod.os, "open", unlink_before_open)
+
+    with pytest.raises(ResumeNotFound) as exc:
+        DebateJournal.resume("abc123", run_header, home=tmp_path)
+
+    assert str(exc.value) == "abc123" or getattr(exc.value, "args", (None,))[0] == "abc123"
+    assert isinstance(exc.value.__cause__, FileNotFoundError)
+    assert calls["n"] == 1
+    assert not path.exists()

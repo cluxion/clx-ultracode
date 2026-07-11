@@ -396,6 +396,38 @@ def test_consensus_cli_resume_completed_run_replays_without_question(capsys):
     assert replayed["tokens_replayed"] == first["tokens_spent"]
 
 
+def test_consensus_cli_resume_returns_journal_busy_when_locked(capsys):
+    import multiprocessing as mp
+
+    from cluxion_effort_ultracode.core.journal import journals_dir
+    from mp_helpers import hold_journal_until_release
+
+    assert (
+        main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
+        == 0
+    )
+    run_id = json.loads(capsys.readouterr().out)["run_id"]
+    home = Path(os.environ["CLUXION_EFFORT_ULTRACODE_HOME"])
+
+    ctx = mp.get_context("spawn")
+    ready = ctx.Queue()
+    release = ctx.Queue()
+
+    proc = ctx.Process(target=hold_journal_until_release, args=(str(home), run_id, ready, release))
+    proc.start()
+    assert ready.get(timeout=10) == "ready"
+
+    exit_code = main(["consensus", "--resume", run_id])
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload == {"ok": False, "error": "journal_busy", "run_id": run_id}
+
+    release.put("done")
+    proc.join(timeout=10)
+    assert proc.exitcode == 0
+    assert (journals_dir() / f"{run_id}.jsonl").exists()
+
+
 def test_journals_list_and_show(capsys):
     assert (
         main(["consensus", "--question", "Adopt?", "--adapter", "mock-unanimous", "--agents", "2", "--rounds", "0"])
@@ -465,6 +497,103 @@ def test_journals_gc_huge_days_returns_structured_error(capsys, tmp_path, monkey
     assert "Traceback" not in captured.out
     assert "Traceback" not in captured.err
     assert path.read_text(encoding="utf-8") == before
+
+
+def test_journals_gc_apply_without_lock_support_returns_typed_error(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("CLUXION_EFFORT_ULTRACODE_HOME", str(tmp_path))
+    directory = journals_dir()
+    directory.mkdir(parents=True)
+    path = directory / "stay.jsonl"
+    path.write_text(
+        json.dumps({"type": "header", "run_id": "stay", "created_at": "2020-01-01T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    monkeypatch.setattr("cluxion_effort_ultracode.core.journal_lifecycle.locks_supported", lambda: False)
+
+    assert main(["journals", "gc", "--older-than-days", "7", "--apply"]) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"] == "journal_lock_unsupported"
+    assert path.read_bytes() == before
+
+
+def test_journals_gc_apply_runtime_flock_enotsup_is_structured(capsys, tmp_path, monkeypatch):
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    monkeypatch.setenv("CLUXION_EFFORT_ULTRACODE_HOME", str(tmp_path))
+    directory = journals_dir()
+    directory.mkdir(parents=True)
+    path = directory / "stay.jsonl"
+    path.write_text(
+        json.dumps({"type": "header", "run_id": "stay", "created_at": "2020-01-01T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnotsup:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnotsup())
+
+    assert main(["journals", "gc", "--older-than-days", "7", "--apply"]) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"] == "journal_lock_unsupported"
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    assert path.read_bytes() == before
+
+
+def test_journals_gc_apply_enolck_is_structured(capsys, tmp_path, monkeypatch):
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    monkeypatch.setenv("CLUXION_EFFORT_ULTRACODE_HOME", str(tmp_path))
+    directory = journals_dir()
+    directory.mkdir(parents=True)
+    path = directory / "stay.jsonl"
+    path.write_text(
+        json.dumps({"type": "header", "run_id": "stay", "created_at": "2020-01-01T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    real_fcntl = journal_mod._fcntl
+    assert real_fcntl is not None
+
+    class _FlockEnolck:
+        LOCK_EX = real_fcntl.LOCK_EX
+        LOCK_NB = real_fcntl.LOCK_NB
+
+        def flock(self, fd: int, flags: int) -> None:
+            del fd, flags
+            raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(journal_mod, "_fcntl", _FlockEnolck())
+
+    assert main(["journals", "gc", "--older-than-days", "7", "--apply"]) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ok"] is False
+    assert payload["error"] == "journal_lock_unsupported"
+    assert "ENOLCK" in payload["message"]
+    assert "retryable" in payload["message"].lower() or "temporarily unavailable" in payload["message"].lower()
+    assert "Traceback" not in captured.out
+    assert path.read_bytes() == before
 
 
 @pytest.mark.skipif(

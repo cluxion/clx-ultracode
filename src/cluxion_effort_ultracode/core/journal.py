@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -11,12 +13,17 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from cluxion_effort_ultracode.core.journal_records import call_record, decode_response, total_tokens
 
 SCHEMA_VERSION = 1
 HOME_ENV = "CLUXION_EFFORT_ULTRACODE_HOME"
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX hosts
+    _fcntl = None  # type: ignore[assignment]
 
 
 class ResumeMismatch(ValueError):
@@ -27,6 +34,21 @@ class ResumeMismatch(ValueError):
 
 class ResumeNotFound(FileNotFoundError):
     pass
+
+
+class JournalBusy(OSError):
+    """Raised when another process holds the per-run advisory lock."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__(run_id)
+        self.run_id = run_id
+
+
+class JournalLockUnsupported(RuntimeError):
+    """Raised when resume/GC mutation requires a lock that the host cannot provide."""
+
+    def __init__(self, message: str = "POSIX advisory locks unavailable") -> None:
+        super().__init__(message)
 
 
 def ultracode_home() -> Path:
@@ -87,13 +109,20 @@ class DebateJournal:
         run_id: str,
         replay_calls: list[dict[str, Any]] | None = None,
         header: Mapping[str, object] | None = None,
+        *,
+        file: TextIO | None = None,
+        locked: bool = False,
     ) -> None:
         self.path = path
         self.run_id = run_id
         self.replay_calls = replay_calls or []
-        self._file: object | None = None
-        self._pending_header = dict(header) if header is not None else None
+        self.header = dict(header) if header is not None else None
+        self._file: TextIO | None = file
+        self._pending_header = dict(header) if header is not None and file is None else None
         self._warned = False
+        self._locked = locked
+        self._writes_disabled = False
+        self._closed = False
 
     @classmethod
     def start(cls, header: Mapping[str, object], *, home: Path | None = None) -> DebateJournal:
@@ -104,24 +133,80 @@ class DebateJournal:
     def resume(
         cls,
         run_id: str,
-        expected_header: Mapping[str, object],
+        expected_header: Mapping[str, object] | None = None,
         *,
         home: Path | None = None,
     ) -> DebateJournal:
         path = journals_dir(home) / f"{run_id}.jsonl"
-        records = read_records(path)
-        if not records:
+        if not path.exists():
             raise ResumeNotFound(run_id)
-        header = records[0]
-        if header.get("type") != "header":
+        if _fcntl is None:
+            raise JournalLockUnsupported("POSIX advisory locks unavailable for journal resume")
+
+        fd: int | None = None
+        file_obj: TextIO | None = None
+        try:
+            # Same FD for lock/read/append: kernel O_APPEND retained through close.
+            try:
+                fd = os.open(path, os.O_RDWR | os.O_APPEND)
+            except FileNotFoundError as exc:
+                # Exists check passed but path vanished before open (unlink race).
+                raise ResumeNotFound(run_id) from exc
+            _lock_exclusive_nonblocking(fd, run_id)
+            _verify_same_inode(fd, path, run_id)
+            _tighten_journal_modes(path)
+            records = _read_records_from_fd(fd)
+            if not records:
+                raise ResumeNotFound(run_id)
+            header = records[0]
+            if header.get("type") != "header":
+                raise ValueError("journal_missing_header")
+            if expected_header is not None:
+                mismatches = _header_mismatches(header, expected_header)
+                if mismatches:
+                    raise ResumeMismatch(mismatches)
+            calls = [record for record in records if record.get("type") == "call"]
+            os.lseek(fd, 0, os.SEEK_END)
+            file_obj = os.fdopen(fd, "a", encoding="utf-8")
+            fd = None
+            journal = cls(path, run_id, calls, header=header, file=file_obj, locked=True)
+            file_obj = None
+            return journal
+        except Exception:
+            if file_obj is not None:
+                with contextlib.suppress(OSError):
+                    file_obj.close()
+            elif fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            raise
+
+    def ensure_matches(self, expected_header: Mapping[str, object]) -> None:
+        if not self.header:
             raise ValueError("journal_missing_header")
-        mismatches = _header_mismatches(header, expected_header)
+        mismatches = _header_mismatches(self.header, expected_header)
         if mismatches:
             raise ResumeMismatch(mismatches)
-        calls = [record for record in records if record.get("type") == "call"]
-        return cls(path, run_id, calls)
+
+    def close(self) -> None:
+        """Release ownership (advisory lock via fd close). Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        file_obj = self._file
+        self._file = None
+        self._locked = False
+        if file_obj is not None:
+            with contextlib.suppress(Exception):
+                file_obj.close()
+
+    def __del__(self) -> None:  # pragma: no cover - best-effort GC release
+        with contextlib.suppress(Exception):
+            self.close()
 
     def append(self, record: Mapping[str, object]) -> None:
+        if self._closed or self._writes_disabled:
+            return
         if self._file is None and not self._open_append():
             return
         if self._pending_header is not None:
@@ -131,6 +216,8 @@ class DebateJournal:
         self._write(record)
 
     def _write(self, record: Mapping[str, object]) -> bool:
+        if self._file is None or self._writes_disabled:
+            return False
         payload = dict(record)
         payload.setdefault("schema_version", SCHEMA_VERSION)
         try:
@@ -139,7 +226,8 @@ class DebateJournal:
             return True
         except OSError as exc:
             self._warn_once(f"warning: ultracode journal write failed: {exc}")
-            self._file = None
+            # Disable further writes but retain ownership until close.
+            self._writes_disabled = True
             return False
 
     def append_result(self, result: object) -> None:
@@ -155,6 +243,9 @@ class DebateJournal:
         )
 
     def _open_append(self) -> bool:
+        """Lazy open for new runs: exclusive create; fail-open if claim/init fails."""
+        if self._closed or self._writes_disabled:
+            return False
         fd: int | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,15 +253,53 @@ class DebateJournal:
             # The plugin home above journals/ may hold other run artifacts;
             # keep it private too, matching the forgetforge home policy.
             os.chmod(self.path.parent.parent, 0o700)
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            # O_EXCL: never write header/call bytes into a colliding existing file
+            # (including zero-byte). Debate continues with warning fail-open.
+            fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_EXCL, 0o600)
             os.chmod(self.path, 0o600)
+
+            if _fcntl is not None:
+                try:
+                    _lock_exclusive_nonblocking(fd, self.run_id)
+                except JournalBusy:
+                    os.close(fd)
+                    fd = None
+                    self._warn_once("warning: ultracode journal disabled: run journal busy")
+                    self._file = None
+                    return False
+                except JournalLockUnsupported as exc:
+                    # O_EXCL already created a zero-byte file. Close the owned FD once,
+                    # leave the empty file in place (do not unlink / write unlocked), and
+                    # disable further opens for this journal object so the debate continues.
+                    os.close(fd)
+                    fd = None
+                    self._file = None
+                    self._locked = False
+                    self._writes_disabled = True
+                    self._warn_once(f"warning: ultracode journal disabled: {exc}")
+                    return False
+                try:
+                    _verify_same_inode(fd, self.path, self.run_id)
+                except (ResumeNotFound, OSError) as exc:
+                    os.close(fd)
+                    fd = None
+                    self._warn_once(f"warning: ultracode journal disabled: {exc}")
+                    self._file = None
+                    return False
+                self._locked = True
+            # Without fcntl, new-run journaling remains fail-open (no exclusive ownership).
+
             self._file = os.fdopen(fd, "a", encoding="utf-8")
             fd = None
             return True
         except OSError as exc:
             if fd is not None:
-                os.close(fd)
-            self._warn_once(f"warning: ultracode journal disabled: {exc}")
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            if exc.errno == errno.EEXIST:
+                self._warn_once("warning: ultracode journal disabled: run_id collision")
+            else:
+                self._warn_once(f"warning: ultracode journal disabled: {exc}")
             self._file = None
             return False
 
@@ -286,6 +415,83 @@ def journal_header(run_id: str, *, home: Path | None = None) -> dict[str, Any]:
     if not records or records[0].get("type") != "header":
         raise ValueError("journal_missing_header")
     return records[0]
+
+
+def try_lock_journal_fd(fd: int, run_id: str) -> None:
+    """Acquire nonblocking exclusive lock on an already-open journal fd."""
+    if _fcntl is None:
+        raise JournalLockUnsupported("POSIX advisory locks unavailable")
+    _lock_exclusive_nonblocking(fd, run_id)
+
+
+def locks_supported() -> bool:
+    return _fcntl is not None
+
+
+def _lock_exclusive_nonblocking(fd: int, run_id: str) -> None:
+    assert _fcntl is not None
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        raise JournalBusy(run_id) from exc
+    except OSError as exc:
+        if exc.errno in {errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK}:
+            raise JournalBusy(run_id) from exc
+        if exc.errno == errno.ENOLCK:
+            # Transient lock-table exhaustion: same typed surface as ENOTSUP for callers,
+            # but message/cause preserve that resources are temporarily unavailable/retryable.
+            raise JournalLockUnsupported(
+                "POSIX advisory locks temporarily unavailable (ENOLCK): lock resources exhausted; retryable"
+            ) from exc
+        unsupported = {errno.ENOSYS, errno.ENOTSUP}
+        eopnotsupp = getattr(errno, "EOPNOTSUPP", None)
+        if eopnotsupp is not None:
+            unsupported.add(eopnotsupp)
+        if exc.errno in unsupported:
+            raise JournalLockUnsupported("POSIX advisory locks unsupported on this filesystem/host") from exc
+        raise
+
+
+def _verify_same_inode(fd: int, path: Path, run_id: str) -> None:
+    fd_stat = os.fstat(fd)
+    try:
+        path_stat = path.stat()
+    except FileNotFoundError as exc:
+        raise ResumeNotFound(run_id) from exc
+    if fd_stat.st_ino != path_stat.st_ino or fd_stat.st_dev != path_stat.st_dev:
+        raise ResumeNotFound(run_id)
+
+
+def _read_records_from_fd(fd: int) -> list[dict[str, Any]]:
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while True:
+        piece = os.read(fd, 65536)
+        if not piece:
+            break
+        chunks.append(piece)
+    text = b"".join(chunks).decode("utf-8")
+    records: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            break
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _tighten_journal_modes(path: Path) -> None:
+    try:
+        os.chmod(path.parent, 0o700)
+        if path.parent.parent.exists():
+            os.chmod(path.parent.parent, 0o700)
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _header_mismatches(

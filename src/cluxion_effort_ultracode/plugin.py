@@ -30,12 +30,13 @@ from cluxion_effort_ultracode.core.consensus import (
 from cluxion_effort_ultracode.core.errors import require_positive_finite, validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
+    JournalBusy,
     JournaledLlm,
+    JournalLockUnsupported,
     LazyLlm,
     ResumeMismatch,
     ResumeNotFound,
     build_header,
-    journal_header,
     new_run_id,
 )
 from cluxion_effort_ultracode.core.ports import LlmPort
@@ -219,10 +220,16 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
         return {"ok": False, "error": "invalid_question", "message": "args must be an object"}
 
     journal_info: dict[str, object] = {}
+    journal: DebateJournal | None = None
     try:
         _reject_unknown_args(args)
         resume = _text_arg(args, "resume", default="")
-        saved = journal_header(resume) if resume else None
+        if resume:
+            # Claim resume first (open+lock), then derive defaults from the locked header.
+            journal = DebateJournal.resume(resume)
+            saved = journal.header
+        else:
+            saved = None
         question = _text_arg(args, "question", default=str((saved or {}).get("question", "")))
         if not question:
             raise ValueError("question is required unless resume points to a journal")
@@ -255,7 +262,10 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             debate_budget_s=debate_budget,
             budget_tokens=budget_tokens,
         )
-        journal = DebateJournal.resume(run_id, header) if resume else DebateJournal.start(header)
+        if journal is not None:
+            journal.ensure_matches(header)
+        else:
+            journal = DebateJournal.start(header)
         journal_info = {"run_id": journal.run_id, "journal_path": str(journal.path)}
         llm = JournaledLlm(
             LazyLlm(lambda: _call_llm_factory(llm_factory, adapter=adapter, timeout_seconds=agent_timeout)),
@@ -271,6 +281,10 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
             models=models,
         ).decide(question, context=context)
         journal.append_result(result)
+    except JournalBusy as exc:
+        return {"ok": False, "error": "journal_busy", "run_id": exc.run_id, **journal_info}
+    except JournalLockUnsupported as exc:
+        return {"ok": False, "error": "journal_lock_unsupported", "message": str(exc), **journal_info}
     except ResumeMismatch as exc:
         return {"ok": False, "error": "resume_mismatch", "fields": exc.fields, **journal_info}
     except ResumeNotFound as exc:
@@ -296,6 +310,9 @@ def _handle_consensus(args: object, *, llm_factory: object) -> dict[str, object]
     except (ConsensusProtocolError, ValueError) as exc:
         error = type(exc).__name__ if isinstance(exc, ConsensusProtocolError) else validation_error_code(exc)
         return {"ok": False, "error": error, "message": str(exc), **journal_info}
+    finally:
+        if journal is not None:
+            journal.close()
     return {"ok": True, "result": asdict(result)}
 
 

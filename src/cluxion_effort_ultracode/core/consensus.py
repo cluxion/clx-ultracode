@@ -84,6 +84,14 @@ class _ConsensusAbort(Exception):
         self.reason = reason
 
 
+class _PostCallDeadline(Exception):
+    """Adapter call finished after debate deadline; tokens must be accounted once."""
+
+    def __init__(self, tokens: TokenUsage) -> None:
+        super().__init__("adapter call completed after debate deadline")
+        self.tokens = tokens
+
+
 class ConsensusEngine:
     """Run an adversarial debate until code-detected unanimity or honest dissent."""
 
@@ -149,6 +157,13 @@ class ConsensusEngine:
                 rounds_completed=0,
             )
         if self._is_unanimous(current):
+            if time.monotonic() >= deadline:
+                return self._aborted_result(
+                    current,
+                    transcript,
+                    reason=self._budget_reason(rounds_completed=0),
+                    rounds_completed=0,
+                )
             return self._unanimous_result(current, transcript, rounds=0)
 
         for round_index in range(1, self.max_rounds + 1):
@@ -156,7 +171,7 @@ class ConsensusEngine:
                 return self._aborted_result(
                     current,
                     transcript,
-                    reason=f"debate exceeded debate_budget_s={self.debate_budget_s:.0f}s after round {round_index - 1}",
+                    reason=self._budget_reason(rounds_completed=round_index - 1),
                     rounds_completed=round_index - 1,
                 )
             self._emit_progress(round_index, "debate")
@@ -178,8 +193,22 @@ class ConsensusEngine:
                     rounds_completed=round_index,
                 )
             if self._is_unanimous(current):
+                if time.monotonic() >= deadline:
+                    return self._aborted_result(
+                        current,
+                        transcript,
+                        reason=self._budget_reason(rounds_completed=round_index),
+                        rounds_completed=round_index,
+                    )
                 return self._unanimous_result(current, transcript, rounds=round_index)
 
+        if time.monotonic() >= deadline:
+            return self._aborted_result(
+                current,
+                transcript,
+                reason=self._budget_reason(rounds_completed=self.max_rounds),
+                rounds_completed=self.max_rounds,
+            )
         return self._no_consensus_result(current, transcript, rounds=self.max_rounds)
 
     def _initial_positions(self, question: str, context: str, *, deadline: float) -> list[AgentPosition]:
@@ -187,7 +216,7 @@ class ConsensusEngine:
             agent_id = self._agent_id(index)
             model = self._model_for(index)
             prompt = self._build_initial_prompt(question, context, agent_id)
-            raw, tokens = self._complete(prompt, schema=POSITION_SCHEMA, model=model)
+            raw, tokens = self._complete(prompt, schema=POSITION_SCHEMA, model=model, deadline=deadline)
             return _parse_position(raw, agent_id=agent_id, debate=False, model=model, tokens=tokens)
 
         return self._gather_positions(
@@ -216,7 +245,7 @@ class ConsensusEngine:
                 positions=previous,
                 devil_advocate=index == ((round_index - 1) % len(previous)) if self.rotate_devils_advocate else False,
             )
-            raw, tokens = self._complete(prompt, schema=DEBATE_SCHEMA, model=model)
+            raw, tokens = self._complete(prompt, schema=DEBATE_SCHEMA, model=model, deadline=deadline)
             position = _parse_position(raw, agent_id=prior.agent_id, debate=True, model=model, tokens=tokens)
             self._validate_debate_update(prior, position)
             return position
@@ -234,6 +263,7 @@ class ConsensusEngine:
         *,
         schema: Mapping[str, Any],
         model: str | None,
+        deadline: float | None = None,
     ) -> tuple[Mapping[str, Any] | str, TokenUsage]:
         if model is None:
             raw = self.llm.complete(prompt, schema=schema)
@@ -242,7 +272,12 @@ class ConsensusEngine:
                 raw = self.llm.complete(prompt, schema=schema, model=model)
             except TypeError as exc:
                 raise ConsensusProtocolError("llm.complete must accept model= when models are configured") from exc
-        return raw, _token_usage(prompt, raw, getattr(self.llm, "last_usage", None))
+        tokens = _token_usage(prompt, raw, getattr(self.llm, "last_usage", None))
+        # Check budget immediately after the adapter returns, before parse/validation,
+        # so malformed output cannot mask a crossed debate deadline.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _PostCallDeadline(tokens)
+        return raw, tokens
 
     def _gather_positions(self, tasks, run_agent, *, deadline: float, phase: str) -> list[AgentPosition]:
         """Collect agent positions with per-agent and total deadlines.
@@ -254,7 +289,7 @@ class ConsensusEngine:
         positions survive (worker count is capped to leave CPU headroom under high fan-out).
         """
         if hasattr(self.llm, "outputs") or getattr(self.llm, "serial_complete", False):
-            return [run_agent(index, prior) for index, prior in tasks]
+            return self._gather_positions_serial(tasks, run_agent, deadline=deadline, phase=phase)
 
         results: dict[int, AgentPosition] = {}
         failures: list[str] = []
@@ -272,12 +307,112 @@ class ConsensusEngine:
                     # hiding them would fake a healthier debate than happened.
                     future.cancel()
                     failures.append(f"agent {index}: timed out after {per_agent:.0f}s in {phase}")
+                except _PostCallDeadline as exc:
+                    # Completed after debate budget: account this call + already-done siblings, then abort.
+                    completed_calls = self._account_post_deadline_parallel(
+                        exc,
+                        futures=futures,
+                        results=results,
+                        current_index=index,
+                    )
+                    raise _ConsensusAbort(self._budget_reason_during(phase, completed_calls=completed_calls)) from exc
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         if len(results) < MIN_QUORUM:
             detail = "; ".join(failures) or "no agent completed"
             raise _ConsensusAbort(f"quorum lost in {phase} ({len(results)}/{len(tasks)} survived): {detail}")
         return [results[index] for index in sorted(results)]
+
+    def _gather_positions_serial(self, tasks, run_agent, *, deadline: float, phase: str) -> list[AgentPosition]:
+        """Serial production path: check debate budget before/after every adapter call.
+
+        Overrun is bounded to one in-flight logical call. A completed call that crosses
+        the deadline before parse/validation (or before _append_round) contributes its
+        tokens once without marking the incomplete round as completed.
+        """
+        results: list[AgentPosition] = []
+        for index, prior in tasks:
+            if time.monotonic() >= deadline:
+                self._account_partial_tokens(results)
+                raise _ConsensusAbort(self._budget_reason_during(phase, completed_calls=len(results)))
+            try:
+                position = run_agent(index, prior)
+            except _PostCallDeadline as exc:
+                # Call finished after deadline: account prior positions + this call once.
+                self._account_partial_tokens(results)
+                self._account_call_tokens(exc.tokens)
+                raise _ConsensusAbort(self._budget_reason_during(phase, completed_calls=len(results) + 1)) from exc
+            results.append(position)
+            if time.monotonic() >= deadline:
+                self._account_partial_tokens(results)
+                raise _ConsensusAbort(self._budget_reason_during(phase, completed_calls=len(results)))
+        return results
+
+    def _account_partial_tokens(self, positions: Sequence[AgentPosition]) -> None:
+        tokens_spent = sum(position.tokens.total_tokens for position in positions if position.tokens is not None)
+        self._tokens_spent += tokens_spent
+        self._tokens_estimated = self._tokens_estimated or any(
+            position.tokens is not None and position.tokens.estimated for position in positions
+        )
+
+    def _account_call_tokens(self, tokens: TokenUsage) -> None:
+        self._tokens_spent += tokens.total_tokens
+        self._tokens_estimated = self._tokens_estimated or tokens.estimated
+
+    def _account_post_deadline_parallel(
+        self,
+        exc: _PostCallDeadline,
+        *,
+        futures: Mapping[Any, int],
+        results: Mapping[int, AgentPosition],
+        current_index: int,
+    ) -> int:
+        """Account prior results + current deadline call + already-done siblings exactly once.
+
+        Freezes the eligible already-done sibling list once at entry (before any token
+        accounting) so a race that finishes mid-accounting cannot inflate the count.
+        Only prior parsed results, the current ``_PostCallDeadline``, snapshotted
+        successful ``AgentPosition``s, and snapshotted ``_PostCallDeadline`` siblings
+        contribute tokens/completed_calls. Generic Exception/cancelled/unfinished
+        siblings prove neither adapter completion nor usage. Never waits on unfinished
+        futures. Returns known completed-call count for the user-visible abort reason
+        (not parsed-position count).
+        """
+        # Snapshot once: only siblings already done at entry are eligible to drain.
+        already_done = [
+            (other_future, other_index)
+            for other_future, other_index in futures.items()
+            if other_index != current_index and other_index not in results and other_future.done()
+        ]
+
+        # Prior successful positions already stored in results.
+        self._account_partial_tokens(list(results.values()))
+        self._account_call_tokens(exc.tokens)
+        completed_calls = len(results) + 1
+
+        for other_future, _other_index in already_done:
+            try:
+                sibling = other_future.result(timeout=0)
+            except _PostCallDeadline as sibling_exc:
+                self._account_call_tokens(sibling_exc.tokens)
+                completed_calls += 1
+            except Exception:
+                # Cancellation / timeout / pre-adapter failure: no tokens, no completed_calls.
+                # Only adapter-proven outcomes (AgentPosition / _PostCallDeadline) count.
+                pass
+            else:
+                self._account_partial_tokens([sibling])
+                completed_calls += 1
+        return completed_calls
+
+    def _budget_reason(self, *, rounds_completed: int) -> str:
+        return f"debate exceeded debate_budget_s={self.debate_budget_s:.0f}s after round {rounds_completed}"
+
+    def _budget_reason_during(self, phase: str, *, completed_calls: int) -> str:
+        return (
+            f"debate exceeded debate_budget_s={self.debate_budget_s:.0f}s "
+            f"during {phase} after {completed_calls} adapter call(s)"
+        )
 
     def _append_round(
         self,

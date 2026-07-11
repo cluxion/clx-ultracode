@@ -291,6 +291,37 @@ def test_consensus_handler_can_resume_completed_journal_without_question() -> No
     assert replayed["result"]["tokens_replayed"] == first["result"]["tokens_spent"]
 
 
+def test_consensus_handler_resume_returns_journal_busy_when_locked() -> None:
+    import multiprocessing as mp
+
+    from cluxion_effort_ultracode.core.journal import journals_dir
+    from mp_helpers import hold_journal_until_release
+
+    llm = ScriptedLlm([position("yes"), position("YES.")])
+    first = json.loads(
+        plugin.build_consensus_handler(_factory(llm))({"question": "Should we answer yes?", "rounds": 0, "agents": 2})
+    )
+    run_id = first["result"]["run_id"]
+    home = journals_dir().parent
+
+    ctx = mp.get_context("spawn")
+    ready = ctx.Queue()
+    release = ctx.Queue()
+
+    proc = ctx.Process(target=hold_journal_until_release, args=(str(home), run_id, ready, release))
+    proc.start()
+    assert ready.get(timeout=10) == "ready"
+    try:
+        payload = json.loads(plugin.build_consensus_handler(_factory(NoCallLlm()))({"resume": run_id}))
+        assert payload["ok"] is False
+        assert payload["error"] == "journal_busy"
+        assert payload["run_id"] == run_id
+    finally:
+        release.put("done")
+        proc.join(timeout=10)
+        assert proc.exitcode == 0
+
+
 def test_consensus_handler_routes_models_and_rejects_empty_entries() -> None:
     llm = ScriptedLlm([position("yes"), position("YES.")])
     handler = plugin.build_consensus_handler(_factory(llm))

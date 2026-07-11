@@ -28,12 +28,13 @@ from cluxion_effort_ultracode.core.consensus import (
 from cluxion_effort_ultracode.core.errors import require_positive_finite, validation_error_code
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
+    JournalBusy,
     JournaledLlm,
+    JournalLockUnsupported,
     LazyLlm,
     ResumeMismatch,
     ResumeNotFound,
     build_header,
-    journal_header,
     journals_dir,
     new_run_id,
     read_records,
@@ -154,6 +155,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run_consensus(namespace: argparse.Namespace) -> int:
     journal_info: dict[str, object] = {}
+    config: _ConsensusConfig | None = None
     try:
         config = _prepare_consensus(namespace)
         journal_info = {"run_id": config.journal.run_id, "journal_path": str(config.journal.path)}
@@ -178,6 +180,17 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
         )
         result = engine.decide(config.question, context=config.context)
         config.journal.append_result(result)
+    except JournalBusy as exc:
+        print(json.dumps({"ok": False, "error": "journal_busy", "run_id": exc.run_id}, ensure_ascii=False))
+        return 1
+    except JournalLockUnsupported as exc:
+        print(
+            json.dumps(
+                {"ok": False, "error": "journal_lock_unsupported", "message": str(exc)},
+                ensure_ascii=False,
+            )
+        )
+        return 1
     except ResumeMismatch as exc:
         print(json.dumps({"ok": False, "error": "resume_mismatch", "fields": exc.fields}, ensure_ascii=False))
         return 1
@@ -233,51 +246,68 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
             )
         )
         return 1
+    finally:
+        if config is not None:
+            config.journal.close()
     print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     return 0
 
 
 def _prepare_consensus(namespace: argparse.Namespace) -> _ConsensusConfig:
-    saved = journal_header(namespace.resume) if namespace.resume else None
-    question = _question_arg(namespace, saved)
-    context = namespace.context if namespace.context is not None else str((saved or {}).get("context", ""))
-    rounds = int(_saved_or(namespace.rounds, saved, "max_rounds", 3))
-    agents = _bounded_int(_saved_or(namespace.agents, saved, "agents_count", 3), "agents_count", 2, MAX_AGENTS)
-    budget_tokens = _optional_int(_saved_or(namespace.budget_tokens, saved, "budget_tokens", None))
-    agent_timeout, debate_budget = _validate_pre_journal(
-        rounds,
-        _saved_or(namespace.agent_timeout, saved, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S),
-        _saved_or(namespace.debate_budget, saved, "debate_budget_s", DEFAULT_DEBATE_BUDGET_S),
-        budget_tokens,
-    )
-    models = _parse_models(namespace.models) if namespace.models is not None else _saved_models(saved)
-    adapter = namespace.adapter or str((saved or {}).get("adapter") or "hermes")
-    run_id = namespace.resume or new_run_id()
-    header = build_header(
-        run_id=run_id,
-        question=question,
-        context=context,
-        agents_count=agents,
-        max_rounds=rounds,
-        models=models or [],
-        adapter=adapter,
-        agent_timeout_s=agent_timeout,
-        debate_budget_s=debate_budget,
-        budget_tokens=budget_tokens,
-    )
-    journal = DebateJournal.resume(run_id, header) if namespace.resume else DebateJournal.start(header)
-    return _ConsensusConfig(
-        question=question,
-        context=context,
-        rounds=rounds,
-        agents=agents,
-        agent_timeout=agent_timeout,
-        debate_budget=debate_budget,
-        budget_tokens=budget_tokens,
-        models=models,
-        adapter=adapter,
-        journal=journal,
-    )
+    journal: DebateJournal | None = None
+    try:
+        if namespace.resume:
+            # Claim resume first (open+lock), then derive defaults from the locked header.
+            journal = DebateJournal.resume(namespace.resume)
+            saved = journal.header
+        else:
+            saved = None
+        question = _question_arg(namespace, saved)
+        context = namespace.context if namespace.context is not None else str((saved or {}).get("context", ""))
+        rounds = int(_saved_or(namespace.rounds, saved, "max_rounds", 3))
+        agents = _bounded_int(_saved_or(namespace.agents, saved, "agents_count", 3), "agents_count", 2, MAX_AGENTS)
+        budget_tokens = _optional_int(_saved_or(namespace.budget_tokens, saved, "budget_tokens", None))
+        agent_timeout, debate_budget = _validate_pre_journal(
+            rounds,
+            _saved_or(namespace.agent_timeout, saved, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S),
+            _saved_or(namespace.debate_budget, saved, "debate_budget_s", DEFAULT_DEBATE_BUDGET_S),
+            budget_tokens,
+        )
+        models = _parse_models(namespace.models) if namespace.models is not None else _saved_models(saved)
+        adapter = namespace.adapter or str((saved or {}).get("adapter") or "hermes")
+        run_id = namespace.resume or new_run_id()
+        header = build_header(
+            run_id=run_id,
+            question=question,
+            context=context,
+            agents_count=agents,
+            max_rounds=rounds,
+            models=models or [],
+            adapter=adapter,
+            agent_timeout_s=agent_timeout,
+            debate_budget_s=debate_budget,
+            budget_tokens=budget_tokens,
+        )
+        if journal is not None:
+            journal.ensure_matches(header)
+        else:
+            journal = DebateJournal.start(header)
+        return _ConsensusConfig(
+            question=question,
+            context=context,
+            rounds=rounds,
+            agents=agents,
+            agent_timeout=agent_timeout,
+            debate_budget=debate_budget,
+            budget_tokens=budget_tokens,
+            models=models,
+            adapter=adapter,
+            journal=journal,
+        )
+    except Exception:
+        if journal is not None:
+            journal.close()
+        raise
 
 
 def _saved_or(value: object, saved: Mapping[str, object] | None, key: str, default: object) -> object:
@@ -409,6 +439,14 @@ def _journals(namespace: argparse.Namespace) -> int:
             raise ValueError(f"unknown journals command: {namespace.journal_command}")
     except ResumeNotFound as exc:
         print(json.dumps({"ok": False, "error": "journal_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        return 1
+    except JournalLockUnsupported as exc:
+        print(
+            json.dumps(
+                {"ok": False, "error": "journal_lock_unsupported", "message": str(exc)},
+                ensure_ascii=False,
+            )
+        )
         return 1
     except ValueError as exc:
         print(json.dumps({"ok": False, "error": validation_error_code(exc), "message": str(exc)}, ensure_ascii=False))
