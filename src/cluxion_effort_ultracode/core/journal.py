@@ -270,30 +270,27 @@ class DebateJournal:
                 try:
                     _lock_exclusive_nonblocking(fd, self.run_id)
                 except JournalBusy:
-                    os.close(fd)
-                    fd = None
-                    self._warn_once("warning: ultracode journal disabled: run journal busy")
-                    self._file = None
-                    return False
+                    # Terminal for this object: disable so later appends cannot open
+                    # again and create seq gaps (e.g. seq=1 without seq=0).
+                    return self._disable_writes_terminal(
+                        "warning: ultracode journal disabled: run journal busy",
+                        fd=fd,
+                    )
                 except JournalLockUnsupported as exc:
                     # O_EXCL already created a zero-byte file. Close the owned FD once,
                     # leave the empty file in place (do not unlink / write unlocked), and
                     # disable further opens for this journal object so the debate continues.
-                    os.close(fd)
-                    fd = None
-                    self._file = None
-                    self._locked = False
-                    self._writes_disabled = True
-                    self._warn_once(f"warning: ultracode journal disabled: {exc}")
-                    return False
+                    return self._disable_writes_terminal(
+                        f"warning: ultracode journal disabled: {exc}",
+                        fd=fd,
+                    )
                 try:
                     _verify_same_inode(fd, self.path, self.run_id)
                 except (ResumeNotFound, OSError) as exc:
-                    os.close(fd)
-                    fd = None
-                    self._warn_once(f"warning: ultracode journal disabled: {exc}")
-                    self._file = None
-                    return False
+                    return self._disable_writes_terminal(
+                        f"warning: ultracode journal disabled: {exc}",
+                        fd=fd,
+                    )
                 self._locked = True
             # Without fcntl, new-run journaling remains fail-open (no exclusive ownership).
 
@@ -301,15 +298,24 @@ class DebateJournal:
             fd = None
             return True
         except OSError as exc:
-            if fd is not None:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
+            # EEXIST / other terminal open failures: same-object fail-open disable so
+            # retries cannot allocate later seqs without the first write succeeding.
             if exc.errno == errno.EEXIST:
-                self._warn_once("warning: ultracode journal disabled: run_id collision")
+                message = "warning: ultracode journal disabled: run_id collision"
             else:
-                self._warn_once(f"warning: ultracode journal disabled: {exc}")
-            self._file = None
-            return False
+                message = f"warning: ultracode journal disabled: {exc}"
+            return self._disable_writes_terminal(message, fd=fd)
+
+    def _disable_writes_terminal(self, message: str, *, fd: int | None = None) -> bool:
+        """Terminal new-run open failure: close any owned FD, clear lock, disable writes."""
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        self._file = None
+        self._locked = False
+        self._writes_disabled = True
+        self._warn_once(message)
+        return False
 
     def _warn_once(self, message: str) -> None:
         if not self._warned:

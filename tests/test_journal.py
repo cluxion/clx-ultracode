@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -1018,3 +1019,371 @@ def test_complete_nonobject_final_no_lf_is_corrupt_not_torn(tmp_path: Path, tail
         read_records(path)
     assert exc_read.value.run_id == run_id
     assert path.read_bytes() == before
+
+
+# --- Cycle 108: GC preflight atomicity + new-run fail-open disable ---
+
+
+def _old_header_bytes(run_id: str, *, days: int = 30) -> bytes:
+    payload = dict(header(run_id))
+    payload["created_at"] = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    return (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+
+
+def test_gc_apply_good_before_corrupt_raises_and_unlinks_nothing(tmp_path: Path) -> None:
+    """apply=True must not unlink an earlier good candidate when a later file is corrupt."""
+    from cluxion_effort_ultracode.core.journal import JournalCorrupt
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    good = journals / "aaa_good.jsonl"
+    corrupt = journals / "zzz_corrupt.jsonl"
+    good.write_bytes(_old_header_bytes("aaa_good"))
+    corrupt.write_bytes(b'{"type":"header","run_id":"zzz_corrupt"}\nNOT-JSON\n')
+    before_good = good.read_bytes()
+    before_corrupt = corrupt.read_bytes()
+
+    with pytest.raises(JournalCorrupt) as exc:
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    assert exc.value.run_id == "zzz_corrupt"
+    assert good.exists()
+    assert corrupt.exists()
+    assert good.read_bytes() == before_good
+    assert corrupt.read_bytes() == before_corrupt
+
+
+def test_gc_empty_claim_uses_mtime_age_only(tmp_path: Path) -> None:
+    """size==0 O_EXCL leftovers: stale mtime is a candidate; fresh mtime is kept."""
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    stale = journals / "empty_stale.jsonl"
+    fresh = journals / "empty_fresh.jsonl"
+    stale.write_bytes(b"")
+    fresh.write_bytes(b"")
+    now = datetime.now(UTC).timestamp()
+    os.utime(stale, (now - 30 * 86400, now - 30 * 86400))
+    os.utime(fresh, (now, now))
+
+    applied = gc_journals(home=tmp_path, older_than_days=7, apply=True)
+    ids = [c["run_id"] for c in applied["candidates"]]
+    assert "empty_stale" in ids
+    assert "empty_fresh" not in ids
+    assert not stale.exists()
+    assert fresh.exists()
+    assert fresh.read_bytes() == b""
+
+
+def test_gc_nonempty_corrupt_never_mtime_deleted(tmp_path: Path) -> None:
+    """Nonempty corrupt journals raise JournalCorrupt and are never deleted by mtime."""
+    from cluxion_effort_ultracode.core.journal import JournalCorrupt
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "badmtime.jsonl"
+    path.write_bytes(b"not-a-jsonl-record\n")
+    now = datetime.now(UTC).timestamp()
+    os.utime(path, (now - 30 * 86400, now - 30 * 86400))
+    before = path.read_bytes()
+
+    with pytest.raises(JournalCorrupt) as exc:
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    assert exc.value.run_id == "badmtime"
+    assert path.exists()
+    assert path.read_bytes() == before
+
+
+def test_gc_apply_inode_swap_skips_unlink_of_replaced_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After preflight, if path identity changes, unlink phase must not delete the path."""
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    path = journals / "swap1.jsonl"
+    path.write_bytes(_old_header_bytes("swap1"))
+    before = path.read_bytes()
+    target = os.fspath(path)
+    path_stats = {"n": 0}
+    real_stat = os.stat
+
+    def reverify_sees_other_inode(path_arg, *args, **kwargs):
+        st = real_stat(path_arg, *args, **kwargs)
+        if os.fspath(path_arg) == target:
+            path_stats["n"] += 1
+            # First path.stat is preflight identity check; second is unlink reverify.
+            if path_stats["n"] >= 2:
+                class _OtherInode:
+                    def __init__(self, base: os.stat_result) -> None:
+                        self._base = base
+                        self.st_ino = base.st_ino + 10_000_001
+                        self.st_dev = base.st_dev
+
+                    def __getattr__(self, name: str):
+                        return getattr(self._base, name)
+
+                return _OtherInode(st)
+        return st
+
+    monkeypatch.setattr(os, "stat", reverify_sees_other_inode)
+
+    result = gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    assert path.exists()
+    assert path.read_bytes() == before
+    assert [c["run_id"] for c in result["candidates"]] == []
+    assert path_stats["n"] >= 2
+
+
+def test_gc_apply_failure_releases_retained_fds(tmp_path: Path) -> None:
+    """On preflight corruption, retained candidate locks/FDs are released (file re-lockable)."""
+    import fcntl
+
+    from cluxion_effort_ultracode.core.journal import JournalCorrupt
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    good = journals / "aaa_hold.jsonl"
+    corrupt = journals / "zzz_bad.jsonl"
+    good.write_bytes(_old_header_bytes("aaa_hold"))
+    corrupt.write_bytes(b"{bad}\n")
+
+    with pytest.raises(JournalCorrupt):
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    # After abort, good file must not remain exclusively locked by GC.
+    fd = os.open(good, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(fd)
+    assert good.exists()
+
+
+def test_gc_apply_open_ioerror_aborts_before_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hard open error is not a benign race and must leave earlier candidates intact."""
+    from cluxion_effort_ultracode.core import journal_lifecycle
+
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    good = journals / "aaa_good.jsonl"
+    broken = journals / "zzz_ioerr.jsonl"
+    good.write_bytes(_old_header_bytes("aaa_good"))
+    broken.write_bytes(_old_header_bytes("zzz_ioerr"))
+    real_open = os.open
+
+    def fail_target(path, flags, *args, **kwargs):
+        if os.fspath(path) == os.fspath(broken):
+            raise OSError(errno.EIO, "simulated open I/O failure")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(journal_lifecycle.os, "open", fail_target)
+    with pytest.raises(OSError, match="simulated open I/O failure"):
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+
+    assert good.exists()
+    assert broken.exists()
+
+
+def test_gc_apply_reverifies_all_candidates_before_any_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later identity-check I/O error must not follow deletion of an earlier candidate."""
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True)
+    first = journals / "aaa_first.jsonl"
+    later = journals / "zzz_later.jsonl"
+    first.write_bytes(_old_header_bytes("aaa_first"))
+    later.write_bytes(_old_header_bytes("zzz_later"))
+    real_stat = os.stat
+    later_stats = {"n": 0}
+
+    def fail_later_reverify(path, *args, **kwargs):
+        if os.fspath(path) == os.fspath(later):
+            later_stats["n"] += 1
+            if later_stats["n"] == 2:
+                raise OSError(errno.EIO, "simulated reverify I/O failure")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", fail_later_reverify)
+    with pytest.raises(OSError, match="simulated reverify I/O failure"):
+        gc_journals(home=tmp_path, older_than_days=7, apply=True)
+    monkeypatch.setattr(os, "stat", real_stat)
+
+    assert first.exists()
+    assert later.exists()
+
+
+def _assert_no_second_open_and_new_object_ok(
+    tmp_path: Path,
+    *,
+    run_id: str,
+    other_run_id: str,
+    journal: DebateJournal,
+    open_calls: dict[str, int],
+) -> None:
+    opens_after_first = open_calls["n"]
+    journal.append({"type": "call", "run_id": run_id, "seq": 1})
+    assert open_calls["n"] == opens_after_first
+    assert journal._writes_disabled is True
+    assert journal._file is None
+    assert journal._locked is False
+
+    other = DebateJournal.start(header(run_id=other_run_id), home=tmp_path)
+    other.append({"type": "call", "run_id": other_run_id, "seq": 0})
+    try:
+        assert other._writes_disabled is False
+        assert other._file is not None
+        assert other.path.stat().st_size > 0
+        lines = other.path.read_text(encoding="utf-8").splitlines()
+        # header + call seq=0 — no seq gap on the successful new object
+        assert any(json.loads(line).get("seq") == 0 for line in lines if line.strip())
+        assert not any(json.loads(line).get("seq") == 1 for line in lines if line.strip())
+    finally:
+        other.close()
+
+
+def test_new_run_journal_busy_disables_writes_no_retry_no_seq_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import JournalBusy
+
+    real_open = journal_mod.os.open
+    real_lock = journal_mod._lock_exclusive_nonblocking
+    open_calls = {"n": 0}
+    fail_run = "busyfail1"
+
+    def counting_open(path_arg, flags, mode=0o777):
+        open_calls["n"] += 1
+        return real_open(path_arg, flags, mode)
+
+    def busy_lock_only_target(fd: int, run_id: str) -> None:
+        if run_id == fail_run:
+            raise JournalBusy(run_id)
+        return real_lock(fd, run_id)
+
+    monkeypatch.setattr(journal_mod.os, "open", counting_open)
+    monkeypatch.setattr(journal_mod, "_lock_exclusive_nonblocking", busy_lock_only_target)
+
+    journal = DebateJournal.start(header(run_id=fail_run), home=tmp_path)
+    journal.append({"type": "call", "run_id": fail_run, "seq": 0})
+    assert journal._writes_disabled is True
+    assert open_calls["n"] >= 1
+
+    _assert_no_second_open_and_new_object_ok(
+        tmp_path,
+        run_id=fail_run,
+        other_run_id="busyok2",
+        journal=journal,
+        open_calls=open_calls,
+    )
+    err = capsys.readouterr().err
+    assert "busy" in err.lower()
+    assert err.count("warning: ultracode journal disabled:") == 1
+
+
+def test_new_run_inode_verify_failure_disables_writes_no_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import cluxion_effort_ultracode.core.journal as journal_mod
+    from cluxion_effort_ultracode.core.journal import ResumeNotFound
+
+    real_open = journal_mod.os.open
+    real_verify = journal_mod._verify_same_inode
+    open_calls = {"n": 0}
+    fail_run = "inodefail1"
+
+    def counting_open(path_arg, flags, mode=0o777):
+        open_calls["n"] += 1
+        return real_open(path_arg, flags, mode)
+
+    def boom_inode_only_target(fd: int, path: Path, run_id: str) -> None:
+        if run_id == fail_run:
+            raise ResumeNotFound(run_id)
+        return real_verify(fd, path, run_id)
+
+    monkeypatch.setattr(journal_mod.os, "open", counting_open)
+    monkeypatch.setattr(journal_mod, "_verify_same_inode", boom_inode_only_target)
+
+    journal = DebateJournal.start(header(run_id=fail_run), home=tmp_path)
+    journal.append({"type": "call", "run_id": fail_run, "seq": 0})
+    assert journal._writes_disabled is True
+
+    _assert_no_second_open_and_new_object_ok(
+        tmp_path,
+        run_id=fail_run,
+        other_run_id="inodeok2",
+        journal=journal,
+        open_calls=open_calls,
+    )
+    assert "warning: ultracode journal disabled:" in capsys.readouterr().err
+
+
+def test_new_run_eexist_disables_writes_no_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    real_open = journal_mod.os.open
+    open_calls = {"n": 0}
+
+    def counting_open(path_arg, flags, mode=0o777):
+        open_calls["n"] += 1
+        return real_open(path_arg, flags, mode)
+
+    monkeypatch.setattr(journal_mod.os, "open", counting_open)
+
+    run_id = "eexist1"
+    journal = DebateJournal.start(header(run_id=run_id), home=tmp_path)
+    journal.path.parent.mkdir(parents=True, exist_ok=True)
+    journal.path.write_bytes(b"")
+
+    journal.append({"type": "call", "run_id": run_id, "seq": 0})
+    assert journal._writes_disabled is True
+    assert journal.path.read_bytes() == b""
+
+    _assert_no_second_open_and_new_object_ok(
+        tmp_path,
+        run_id=run_id,
+        other_run_id="eexistok2",
+        journal=journal,
+        open_calls=open_calls,
+    )
+    assert "collision" in capsys.readouterr().err.lower()
+
+
+def test_new_run_terminal_open_oserror_disables_writes_no_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import errno
+
+    import cluxion_effort_ultracode.core.journal as journal_mod
+
+    real_open = journal_mod.os.open
+    open_calls = {"n": 0}
+
+    def counting_open(path_arg, flags, mode=0o777):
+        open_calls["n"] += 1
+        # Fail exclusive create for the target journal only.
+        if str(path_arg).endswith("openfail1.jsonl"):
+            raise OSError(errno.EIO, "simulated open failure")
+        return real_open(path_arg, flags, mode)
+
+    monkeypatch.setattr(journal_mod.os, "open", counting_open)
+
+    run_id = "openfail1"
+    journal = DebateJournal.start(header(run_id=run_id), home=tmp_path)
+    journal.append({"type": "call", "run_id": run_id, "seq": 0})
+    assert journal._writes_disabled is True
+
+    _assert_no_second_open_and_new_object_ok(
+        tmp_path,
+        run_id=run_id,
+        other_run_id="openok2",
+        journal=journal,
+        open_calls=open_calls,
+    )
+    assert "warning: ultracode journal disabled:" in capsys.readouterr().err
