@@ -24,7 +24,7 @@ cluxion-ultracode = "cluxion_effort_ultracode.cli:main"
 cluxion-agentplugin-effort-ultracode = "cluxion_effort_ultracode.plugin"
 
 [project.urls]
-Repository = "https://github.com/cluxion/cluxion-Agentplugin-Effort-Ultracode"
+Repository = "https://github.com/cluxion/clx-ultracode.git"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cluxion_effort_ultracode"]

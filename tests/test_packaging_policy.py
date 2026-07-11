@@ -4,6 +4,11 @@ import json
 import tomllib
 from pathlib import Path
 
+CANONICAL_PLUGIN_ID = "clx-ultracode"
+# Python distribution / Hermes entry-point identity stays on the legacy name.
+PYTHON_DIST_NAME = "cluxion-agentplugin-effort-ultracode"
+PUBLIC_REPO_URL = "https://github.com/cluxion/clx-ultracode.git"
+
 
 def test_root_plugin_artifacts_are_version_synced() -> None:
     from cluxion_effort_ultracode import __version__
@@ -20,6 +25,8 @@ def test_root_plugin_artifacts_are_version_synced() -> None:
     assert codex["version"] == version
     assert lockfile["package"][0]["version"] == version
     assert claude == codex
+    assert claude["name"] == CANONICAL_PLUGIN_ID
+    assert codex["name"] == CANONICAL_PLUGIN_ID
     assert Path("commands/cluxion-consensus.md").is_file()
     assert Path("commands/ultracode-doctor.md").is_file()
     assert Path("skills/ultracode/SKILL.md").is_file()
@@ -35,5 +42,19 @@ def test_marketplace_manifest_is_version_synced() -> None:
     version = pyproject["project"]["version"]
 
     marketplace = json.loads(Path(".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+    assert marketplace["name"] == CANONICAL_PLUGIN_ID
+    assert marketplace["plugins"][0]["name"] == CANONICAL_PLUGIN_ID
     assert marketplace["plugins"][0]["version"] == version
     assert marketplace["plugins"][0]["source"] == "./"
+
+
+def test_discovery_identity_vs_python_distribution_compat() -> None:
+    """Public/discovery names may move; Python dist/entry-point names must not."""
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    project = pyproject["project"]
+
+    assert project["name"] == PYTHON_DIST_NAME
+    assert project["urls"]["Repository"] == PUBLIC_REPO_URL
+    hermes_eps = project["entry-points"]["hermes_agent.plugins"]
+    assert PYTHON_DIST_NAME in hermes_eps
+    assert "cluxion-ultracode" in project["scripts"]

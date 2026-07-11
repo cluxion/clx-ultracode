@@ -2,13 +2,16 @@
 
 ======== 한국어 ========
 
-# cluxion-agentplugin-effort-ultracode
+# clx-ultracode
 
 AI 에이전트(Hermes Agent, Claude Code, Codex)를 위한 합의 의사결정 플러그인입니다. 핵심 기능은
 **3개 에이전트의 적대적 토론**입니다: 세 에이전트가 근거와 이유로 서로를 설득하고, 더 잘 논증된
 주장은 이유와 함께 수용하며, **만장일치에 이르렀을 때에만** 그 결정을 채택합니다. 합의에 이르지
 못하면 반대 의견과 함께 정직하게 `no_consensus`를 반환합니다. 수렴 판정은 모델이 아니라 결정론적
 코드가 통제합니다.
+
+공개/discovery 이름: `clx-ultracode`. Python 배포·Hermes entry-point 이름은 호환을 위해
+`cluxion-agentplugin-effort-ultracode`를 유지합니다.
 
 ## 설치
 
@@ -46,15 +49,15 @@ plugins:
 로컬 checkout:
 
 ```bash
-codex plugin marketplace add cluxion-local /path/to/cluxion-Agentplugin-Effort-Ultracode
-codex plugin add cluxion-agentplugin-effort-ultracode@cluxion-local
+codex plugin marketplace add cluxion-local /path/to/clx-ultracode
+codex plugin add clx-ultracode@cluxion-local
 ```
 
 Git URL:
 
 ```bash
-codex plugin marketplace add cluxion https://github.com/cluxion/cluxion-Agentplugin-Effort-Ultracode
-codex plugin add cluxion-agentplugin-effort-ultracode@cluxion
+codex plugin marketplace add cluxion https://github.com/cluxion/clx-ultracode.git
+codex plugin add clx-ultracode@cluxion
 ```
 
 Codex는 루트 `.codex-plugin/plugin.json`, `commands/`, `skills/`를 읽습니다. `[plugins.<name>] command`
@@ -140,13 +143,16 @@ Apache-2.0
 
 ============ English ==========
 
-# cluxion-agentplugin-effort-ultracode
+# clx-ultracode
 
 A consensus decision plugin for AI agents (Hermes Agent, Claude Code, Codex). Its headline
 feature is a **3-agent adversarial debate**: three agents argue from evidence and reasons,
 concede points that are better-argued (with a stated reason), and only a **unanimous**
 agreement becomes the decision. If they cannot agree, it returns an honest `no_consensus` with
 the dissent. Convergence is controlled by deterministic code, not by the model.
+
+Public/discovery name: `clx-ultracode`. The Python distribution and Hermes entry-point name
+remain `cluxion-agentplugin-effort-ultracode` for compatibility.
 
 ## Install
 
@@ -183,15 +189,15 @@ plugins:
 Local checkout:
 
 ```bash
-codex plugin marketplace add cluxion-local /path/to/cluxion-Agentplugin-Effort-Ultracode
-codex plugin add cluxion-agentplugin-effort-ultracode@cluxion-local
+codex plugin marketplace add cluxion-local /path/to/clx-ultracode
+codex plugin add clx-ultracode@cluxion-local
 ```
 
 Git URL:
 
 ```bash
-codex plugin marketplace add cluxion https://github.com/cluxion/cluxion-Agentplugin-Effort-Ultracode
-codex plugin add cluxion-agentplugin-effort-ultracode@cluxion
+codex plugin marketplace add cluxion https://github.com/cluxion/clx-ultracode.git
+codex plugin add clx-ultracode@cluxion
 ```
 
 Codex reads the root `.codex-plugin/plugin.json`, `commands/`, and `skills/`. Do not use a
