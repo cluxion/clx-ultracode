@@ -51,6 +51,14 @@ class JournalLockUnsupported(RuntimeError):
         super().__init__(message)
 
 
+class JournalCorrupt(ValueError):
+    """Raised when a journal contains an unrepairable corrupt JSONL record."""
+
+    def __init__(self, run_id: str, message: str = "journal contains corrupt record") -> None:
+        super().__init__(message)
+        self.run_id = run_id
+
+
 def ultracode_home() -> Path:
     return Path(os.getenv(HOME_ENV, "~/.cluxion-ultracode")).expanduser()
 
@@ -155,7 +163,7 @@ class DebateJournal:
             _lock_exclusive_nonblocking(fd, run_id)
             _verify_same_inode(fd, path, run_id)
             _tighten_journal_modes(path)
-            records = _read_records_from_fd(fd)
+            records = _read_records_from_fd(fd, run_id=run_id, mutate=True)
             if not records:
                 raise ResumeNotFound(run_id)
             header = records[0]
@@ -397,17 +405,7 @@ class JournaledLlm:
 def read_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise ResumeNotFound(path.stem)
-    records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            break
-        if isinstance(record, dict):
-            records.append(record)
-    return records
+    return _parse_jsonl_bytes(path.read_bytes(), run_id=path.stem).records
 
 
 def journal_header(run_id: str, *, home: Path | None = None) -> dict[str, Any]:
@@ -462,7 +460,7 @@ def _verify_same_inode(fd: int, path: Path, run_id: str) -> None:
         raise ResumeNotFound(run_id)
 
 
-def _read_records_from_fd(fd: int) -> list[dict[str, Any]]:
+def _read_fd_bytes(fd: int) -> bytes:
     os.lseek(fd, 0, os.SEEK_SET)
     chunks: list[bytes] = []
     while True:
@@ -470,18 +468,100 @@ def _read_records_from_fd(fd: int) -> list[dict[str, Any]]:
         if not piece:
             break
         chunks.append(piece)
-    text = b"".join(chunks).decode("utf-8")
+    return b"".join(chunks)
+
+
+def _read_records_from_fd(
+    fd: int,
+    *,
+    run_id: str,
+    mutate: bool = False,
+) -> list[dict[str, Any]]:
+    """Parse journal bytes from an open FD; optionally repair the final non-LF segment."""
+    data = _read_fd_bytes(fd)
+    parsed = _parse_jsonl_bytes(data, run_id=run_id)
+    if mutate:
+        if parsed.trailing_action == "truncate":
+            os.ftruncate(fd, parsed.validated_end)
+        elif parsed.trailing_action == "append_lf":
+            os.lseek(fd, 0, os.SEEK_END)
+            os.write(fd, b"\n")
+    return parsed.records
+
+
+class _JsonlParseResult:
+    __slots__ = ("records", "trailing_action", "validated_end")
+
+    def __init__(
+        self,
+        records: list[dict[str, Any]],
+        validated_end: int,
+        trailing_action: str,
+    ) -> None:
+        self.records = records
+        self.validated_end = validated_end
+        # "none" | "truncate" | "append_lf"
+        self.trailing_action = trailing_action
+
+
+def _parse_jsonl_bytes(data: bytes, *, run_id: str) -> _JsonlParseResult:
+    """Shared bytes-based JSONL parser for path readers and resume FD readers.
+
+    Tracks validated record boundaries. Newline-terminated or mid-file invalid
+    records raise JournalCorrupt (callers must not mutate). A final segment
+    without LF that fails UTF-8/JSON decode is reported as
+    trailing_action='truncate' at the start of that segment; a successfully
+    decoded non-object final segment is JournalCorrupt (no mutation); a valid
+    final JSON object without LF is kept with trailing_action='append_lf'.
+    """
     records: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        if not line.strip():
+    offset = 0
+    validated_end = 0
+    length = len(data)
+
+    while offset < length:
+        nl = data.find(b"\n", offset)
+        if nl == -1:
+            segment = data[offset:]
+            if not segment:
+                break
+            try:
+                text = segment.decode("utf-8")
+            except UnicodeDecodeError:
+                return _JsonlParseResult(records, offset, "truncate")
+            if not text.strip():
+                # Trailing whitespace-only segment: leave bytes as-is for readers.
+                break
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError:
+                return _JsonlParseResult(records, offset, "truncate")
+            if not isinstance(record, dict):
+                raise JournalCorrupt(run_id, "journal contains non-object JSONL record")
+            records.append(record)
+            return _JsonlParseResult(records, length, "append_lf")
+
+        line_bytes = data[offset:nl]
+        line_end = nl + 1
+        try:
+            text = line_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise JournalCorrupt(run_id, "journal contains corrupt UTF-8 record") from exc
+        if not text.strip():
+            offset = line_end
+            validated_end = line_end
             continue
         try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            break
-        if isinstance(record, dict):
-            records.append(record)
-    return records
+            record = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise JournalCorrupt(run_id, "journal contains corrupt JSONL record") from exc
+        if not isinstance(record, dict):
+            raise JournalCorrupt(run_id, "journal contains non-object JSONL record")
+        records.append(record)
+        offset = line_end
+        validated_end = line_end
+
+    return _JsonlParseResult(records, validated_end if validated_end or not data else 0, "none")
 
 
 def _tighten_journal_modes(path: Path) -> None:

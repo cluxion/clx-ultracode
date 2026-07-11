@@ -862,3 +862,159 @@ def test_resume_open_unlink_race_is_typed_resume_not_found(tmp_path: Path, monke
     assert isinstance(exc.value.__cause__, FileNotFoundError)
     assert calls["n"] == 1
     assert not path.exists()
+
+
+def _seed_journal_bytes(tmp_path: Path, run_id: str, *segments: bytes) -> Path:
+    journals = tmp_path / "journals"
+    journals.mkdir(parents=True, exist_ok=True)
+    path = journals / f"{run_id}.jsonl"
+    path.write_bytes(b"".join(segments))
+    os.chmod(journals, 0o700)
+    os.chmod(path, 0o600)
+    return path
+
+
+def test_resume_repairs_torn_json_tail_before_append_and_later_record_visible(tmp_path: Path) -> None:
+    """Invalid final segment without LF is truncated; subsequent append remains visible."""
+    run_id = "tornjson1"
+    run_header = header(run_id=run_id)
+    header_line = (json.dumps(dict(run_header), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    call0 = (json.dumps({"type": "call", "run_id": run_id, "seq": 0}, sort_keys=True) + "\n").encode("utf-8")
+    torn = b'{"type":"call","run_id":"tornjson1","seq":1'
+    path = _seed_journal_bytes(tmp_path, run_id, header_line, call0, torn)
+    good_prefix = header_line + call0
+
+    resumed = DebateJournal.resume(run_id, run_header, home=tmp_path)
+    try:
+        assert len(resumed.replay_calls) == 1
+        assert resumed.replay_calls[0]["seq"] == 0
+        resumed.append({"type": "call", "run_id": run_id, "seq": 1})
+    finally:
+        resumed.close()
+
+    data = path.read_bytes()
+    assert data.startswith(good_prefix)
+    assert torn not in data
+    lines = data.decode("utf-8").splitlines()
+    assert len(lines) == 3
+    assert json.loads(lines[0])["type"] == "header"
+    assert json.loads(lines[1])["seq"] == 0
+    assert json.loads(lines[2])["seq"] == 1
+    for line in lines:
+        json.loads(line)
+
+
+def test_resume_repairs_torn_utf8_tail_before_append(tmp_path: Path) -> None:
+    """Partial UTF-8 final segment without LF is truncated before future writes."""
+    run_id = "tornutf8"
+    run_header = header(run_id=run_id)
+    header_line = (json.dumps(dict(run_header), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    call0 = (json.dumps({"type": "call", "run_id": run_id, "seq": 0}, sort_keys=True) + "\n").encode("utf-8")
+    # Incomplete 2-byte UTF-8 sequence (would be U+00E9 if completed with 0xA9).
+    torn_utf8 = b"\xc3"
+    path = _seed_journal_bytes(tmp_path, run_id, header_line, call0, torn_utf8)
+    good_prefix = header_line + call0
+
+    resumed = DebateJournal.resume(run_id, run_header, home=tmp_path)
+    try:
+        resumed.append({"type": "call", "run_id": run_id, "seq": 1})
+    finally:
+        resumed.close()
+
+    data = path.read_bytes()
+    assert data.startswith(good_prefix)
+    assert not data[len(good_prefix) :].startswith(torn_utf8)
+    lines = data.decode("utf-8").splitlines()
+    assert len(lines) == 3
+    assert json.loads(lines[2])["seq"] == 1
+
+
+def test_resume_valid_json_without_final_lf_gets_delimiter_and_is_preserved(tmp_path: Path) -> None:
+    """Valid final JSON object without LF is kept and exactly one LF is appended before writes."""
+    run_id = "nofl1"
+    run_header = header(run_id=run_id)
+    header_obj = json.dumps(dict(run_header), ensure_ascii=False, sort_keys=True)
+    call0_obj = json.dumps({"type": "call", "run_id": run_id, "seq": 0}, sort_keys=True)
+    # Header ends with LF; final call record has no trailing LF.
+    path = _seed_journal_bytes(
+        tmp_path,
+        run_id,
+        (header_obj + "\n").encode("utf-8"),
+        call0_obj.encode("utf-8"),
+    )
+    assert not path.read_bytes().endswith(b"\n")
+
+    resumed = DebateJournal.resume(run_id, run_header, home=tmp_path)
+    try:
+        assert len(resumed.replay_calls) == 1
+        assert resumed.replay_calls[0]["seq"] == 0
+        # After resume repair, validated content must end with exactly one LF before appends.
+        after_resume = path.read_bytes()
+        assert after_resume.endswith(b"\n")
+        assert after_resume == (header_obj + "\n" + call0_obj + "\n").encode("utf-8")
+        resumed.append({"type": "call", "run_id": run_id, "seq": 1})
+    finally:
+        resumed.close()
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 3
+    assert json.loads(lines[1])["seq"] == 0
+    assert json.loads(lines[2])["seq"] == 1
+    # No doubled blank record between preserved call and append.
+    assert path.read_bytes().count(b"\n\n") == 0
+
+
+def test_newline_terminated_and_midfile_corrupt_fail_without_mutation(tmp_path: Path) -> None:
+    """Newline-terminated corrupt and mid-file corrupt records raise typed error; bytes unchanged."""
+    from cluxion_effort_ultracode.core.journal import JournalCorrupt
+
+    run_id = "corrupt1"
+    run_header = header(run_id=run_id)
+    header_line = (json.dumps(dict(run_header), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+
+    # Newline-terminated corrupt record (final line has LF).
+    nl_corrupt = header_line + b"not-json-at-all\n"
+    path_nl = _seed_journal_bytes(tmp_path, run_id, nl_corrupt)
+    before_nl = path_nl.read_bytes()
+    with pytest.raises(JournalCorrupt) as exc_nl:
+        DebateJournal.resume(run_id, run_header, home=tmp_path)
+    assert exc_nl.value.run_id == run_id
+    assert path_nl.read_bytes() == before_nl
+
+    # Mid-file corrupt: bad newline-terminated record, then a valid record after it.
+    run_id_mid = "corrupt2"
+    run_header_mid = header(run_id=run_id_mid)
+    header_mid = (json.dumps(dict(run_header_mid), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    call_mid = (json.dumps({"type": "call", "run_id": run_id_mid, "seq": 0}, sort_keys=True) + "\n").encode("utf-8")
+    mid_corrupt = header_mid + b"{bad-json}\n" + call_mid
+    path_mid = _seed_journal_bytes(tmp_path, run_id_mid, mid_corrupt)
+    before_mid = path_mid.read_bytes()
+    with pytest.raises(JournalCorrupt) as exc_mid:
+        DebateJournal.resume(run_id_mid, run_header_mid, home=tmp_path)
+    assert exc_mid.value.run_id == run_id_mid
+    assert path_mid.read_bytes() == before_mid
+
+
+@pytest.mark.parametrize("tail", [b"[]", b"null"])
+def test_complete_nonobject_final_no_lf_is_corrupt_not_torn(tmp_path: Path, tail: bytes) -> None:
+    """Complete valid-JSON non-object final no-LF is corrupt, not a torn fragment; bytes exact."""
+    from cluxion_effort_ultracode.core.journal import JournalCorrupt, read_records
+
+    run_id = f"nonobj{tail.decode('ascii')}"
+    run_header = header(run_id=run_id)
+    header_line = (json.dumps(dict(run_header), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    call0 = (json.dumps({"type": "call", "run_id": run_id, "seq": 0}, sort_keys=True) + "\n").encode("utf-8")
+    path = _seed_journal_bytes(tmp_path, run_id, header_line, call0, tail)
+    before = path.read_bytes()
+    assert not before.endswith(b"\n")
+    assert before.endswith(tail)
+
+    with pytest.raises(JournalCorrupt) as exc_resume:
+        DebateJournal.resume(run_id, run_header, home=tmp_path)
+    assert exc_resume.value.run_id == run_id
+    assert path.read_bytes() == before
+
+    with pytest.raises(JournalCorrupt) as exc_read:
+        read_records(path)
+    assert exc_read.value.run_id == run_id
+    assert path.read_bytes() == before

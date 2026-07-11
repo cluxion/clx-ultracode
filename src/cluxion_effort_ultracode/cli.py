@@ -29,6 +29,7 @@ from cluxion_effort_ultracode.core.errors import require_positive_finite, valida
 from cluxion_effort_ultracode.core.journal import (
     DebateJournal,
     JournalBusy,
+    JournalCorrupt,
     JournaledLlm,
     JournalLockUnsupported,
     LazyLlm,
@@ -196,6 +197,20 @@ def _run_consensus(namespace: argparse.Namespace) -> int:
         return 1
     except ResumeNotFound as exc:
         print(json.dumps({"ok": False, "error": "journal_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        return 1
+    except JournalCorrupt as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "journal_corrupt",
+                    "run_id": exc.run_id,
+                    "message": str(exc),
+                    **journal_info,
+                },
+                ensure_ascii=False,
+            )
+        )
         return 1
     except HermesLlmError as exc:
         print(
@@ -439,6 +454,14 @@ def _journals(namespace: argparse.Namespace) -> int:
             raise ValueError(f"unknown journals command: {namespace.journal_command}")
     except ResumeNotFound as exc:
         print(json.dumps({"ok": False, "error": "journal_not_found", "run_id": str(exc)}, ensure_ascii=False))
+        return 1
+    except JournalCorrupt as exc:
+        print(
+            json.dumps(
+                {"ok": False, "error": "journal_corrupt", "run_id": exc.run_id, "message": str(exc)},
+                ensure_ascii=False,
+            )
+        )
         return 1
     except JournalLockUnsupported as exc:
         print(

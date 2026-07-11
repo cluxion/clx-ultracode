@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11,6 +10,8 @@ from pathlib import Path
 from cluxion_effort_ultracode.core.journal import (
     JournalBusy,
     JournalLockUnsupported,
+    _parse_jsonl_bytes,
+    _read_fd_bytes,
     journals_dir,
     locks_supported,
     read_records,
@@ -86,7 +87,7 @@ def _gc_inspect(path: Path, *, cutoff: datetime, apply: bool) -> dict[str, objec
         if fd_stat.st_ino != path_stat.st_ino or fd_stat.st_dev != path_stat.st_dev:
             return None
 
-        records = _read_records_fd(fd)
+        records = _read_records_fd(fd, run_id=path.stem)
         summary = _summary_from_records(path, records)
         created = _parse_time(str(summary.get("created_at") or ""))
         if created is None or created >= cutoff:
@@ -124,26 +125,10 @@ def _summary_from_records(path: Path, records: list[dict[str, object]]) -> dict[
     }
 
 
-def _read_records_fd(fd: int) -> list[dict[str, object]]:
-    os.lseek(fd, 0, os.SEEK_SET)
-    chunks: list[bytes] = []
-    while True:
-        piece = os.read(fd, 65536)
-        if not piece:
-            break
-        chunks.append(piece)
-
-    records: list[dict[str, object]] = []
-    for line in b"".join(chunks).decode("utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            break
-        if isinstance(record, dict):
-            records.append(record)
-    return records
+def _read_records_fd(fd: int, *, run_id: str = "") -> list[dict[str, object]]:
+    """Read-only shared JSONL parse (no tail repair mutation)."""
+    data = _read_fd_bytes(fd)
+    return _parse_jsonl_bytes(data, run_id=run_id or "unknown").records
 
 
 def _preview(value: str, limit: int = 80) -> str:

@@ -41,7 +41,8 @@ debugging. Journaled runs do NOT drop timed-out agents: a timeout or completion 
 invocation; `--resume` replays the recorded prefix and retries the unrecorded failed call, which may
 be billed again. Timeout-drop + `MIN_QUORUM` continuation apply only to the non-journaled parallel path. Validation errors use `invalid_question`, `invalid_models`, `invalid_agents`,
 `invalid_rounds`, `invalid_budget`, or `invalid_timeout`; missing journals on resume return
-`journal_not_found`.
+`journal_not_found`, while newline-terminated or mid-file corruption returns `journal_corrupt`
+without mutation (only a torn final no-newline fragment is repaired).
 
 ## Journals
 
@@ -60,7 +61,7 @@ Rules:
 4. If `status` is `aborted`, report `abort_reason`, `rounds_completed`, and the partial transcript.
 5. Treat `abort_reason: "token_budget_exceeded"` as an honest budget stop, not a failed consensus.
 6. Do not raise `--rounds` or `--agents` past the CLI hard caps.
-7. On resume errors, report `resume_mismatch` fields or `journal_not_found` instead of mixing runs.
+7. On resume errors, report `resume_mismatch` fields, `journal_not_found`, or `journal_corrupt` instead of mixing runs.
 8. Never claim checks were run unless the host actually ran them.
 
 ## Doctor
