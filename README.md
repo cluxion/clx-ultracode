@@ -12,6 +12,7 @@ AI 에이전트(Hermes Agent, Claude Code, Codex)를 위한 합의 의사결정 
 
 공개/discovery 이름: `clx-ultracode`. Python 배포·Hermes entry-point 이름은 호환을 위해
 `cluxion-agentplugin-effort-ultracode`를 유지합니다.
+에이전트가 발견하는 스킬 ID와 경로도 `clx-ultracode` / `skills/clx-ultracode/`입니다.
 
 ## 설치
 
@@ -153,6 +154,7 @@ the dissent. Convergence is controlled by deterministic code, not by the model.
 
 Public/discovery name: `clx-ultracode`. The Python distribution and Hermes entry-point name
 remain `cluxion-agentplugin-effort-ultracode` for compatibility.
+The agent-discovered skill ID and path are also `clx-ultracode` and `skills/clx-ultracode/`.
 
 ## Install
 

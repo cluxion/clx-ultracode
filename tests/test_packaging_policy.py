@@ -30,7 +30,10 @@ def test_root_plugin_artifacts_are_version_synced() -> None:
     assert Path("commands/clx-consensus.md").is_file()
     assert not Path("commands/cluxion-consensus.md").exists()
     assert Path("commands/ultracode-doctor.md").is_file()
-    assert Path("skills/ultracode/SKILL.md").is_file()
+    skill = Path("skills/clx-ultracode/SKILL.md")
+    assert skill.is_file()
+    assert "name: clx-ultracode" in skill.read_text(encoding="utf-8")
+    assert not Path("skills/ultracode").exists()
 
 
 def test_no_root_adapter_forks_or_fictional_codex_snippets() -> None:
